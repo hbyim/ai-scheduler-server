@@ -1,67 +1,89 @@
+import os, uuid
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-import json, os, uuid
-from datetime import datetime
+import requests as req
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), 'events.json')
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
+TABLE = 'events'
 
-def load_events():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+def sb_headers():
+    return {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+    }
 
-def save_events(events):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(events, f, ensure_ascii=False, indent=2)
+def sb_url(suffix=''):
+    return f'{SUPABASE_URL}/rest/v1/{TABLE}{suffix}'
 
-# Serve the frontend
+def to_db(e):
+    return {
+        'id':       e.get('id'),
+        'title':    e.get('title'),
+        'date':     e.get('date'),
+        'time':     e.get('time'),
+        'end_time': e.get('endTime'),
+        'location': e.get('location'),
+        'note':     e.get('note'),
+        'priority': e.get('priority', 'mid'),
+    }
+
+def to_front(e):
+    return {
+        'id':       e.get('id'),
+        'title':    e.get('title'),
+        'date':     e.get('date'),
+        'time':     e.get('time'),
+        'endTime':  e.get('end_time'),
+        'location': e.get('location'),
+        'note':     e.get('note'),
+        'priority': e.get('priority', 'mid'),
+    }
+
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
 
-# GET all events
 @app.route('/api/events', methods=['GET'])
 def get_events():
-    return jsonify(load_events())
+    r = req.get(sb_url(), headers=sb_headers(), params={'order': 'date.asc,time.asc'})
+    if not r.ok:
+        return jsonify({'error': r.text}), 500
+    return jsonify([to_front(e) for e in r.json()])
 
-# POST create event
 @app.route('/api/events', methods=['POST'])
 def create_event():
-    event = request.get_json()
-    if not event.get('id'):
-        event['id'] = str(uuid.uuid4())[:8]
-    event['updatedAt'] = datetime.utcnow().isoformat()
-    events = load_events()
-    events.append(event)
-    save_events(events)
-    return jsonify(event), 201
+    data = request.get_json()
+    if not data.get('id'):
+        data['id'] = str(uuid.uuid4())[:8]
+    r = req.post(sb_url(), headers=sb_headers(), json=to_db(data))
+    if not r.ok:
+        return jsonify({'error': r.text}), 500
+    rows = r.json()
+    return jsonify(to_front(rows[0] if rows else data)), 201
 
-# PUT update event
 @app.route('/api/events/<event_id>', methods=['PUT'])
 def update_event(event_id):
-    updated = request.get_json()
-    updated['id'] = event_id
-    updated['updatedAt'] = datetime.utcnow().isoformat()
-    events = load_events()
-    idx = next((i for i, e in enumerate(events) if e['id'] == event_id), None)
-    if idx is None:
-        return jsonify({'error': 'Not found'}), 404
-    events[idx] = updated
-    save_events(events)
-    return jsonify(updated)
+    data = request.get_json()
+    data['id'] = event_id
+    r = req.patch(sb_url(f'?id=eq.{event_id}'), headers=sb_headers(), json=to_db(data))
+    if not r.ok:
+        return jsonify({'error': r.text}), 500
+    rows = r.json()
+    return jsonify(to_front(rows[0] if rows else data))
 
-# DELETE event
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
-    events = load_events()
-    events = [e for e in events if e['id'] != event_id]
-    save_events(events)
+    r = req.delete(sb_url(f'?id=eq.{event_id}'), headers=sb_headers())
+    if not r.ok:
+        return jsonify({'error': r.text}), 500
     return jsonify({'ok': True})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
