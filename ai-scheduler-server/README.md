@@ -1,68 +1,92 @@
 # AI 일정관리 앱 — 배포 가이드
 
-## 📁 파일 구조
+## 전체 흐름
 
 ```
-ai-scheduler-server/
-├── app.py            ← Flask 서버
-├── requirements.txt  ← 의존성 패키지
-├── render.yaml       ← Render.com 배포 설정
-├── events.json       ← 일정 데이터 (자동 생성)
-└── static/
-    └── index.html    ← 프론트엔드 앱
+[브라우저] ←→ [Render.com Flask 서버] ←→ [Supabase PostgreSQL DB]
 ```
+
+서버가 재시작되어도 일정 데이터는 Supabase DB에 안전하게 보관됩니다.
 
 ---
 
-## 🚀 방법 1: Render.com 무료 배포 (인터넷 어디서나 접속)
+## 1단계 — Supabase 데이터베이스 설정 (5분)
 
-### 1단계 — GitHub에 코드 올리기
-1. [github.com](https://github.com) 회원가입 후 로그인
-2. 우측 상단 **+** → **New repository** 클릭
-3. Repository name: `ai-scheduler` 입력 후 **Create repository**
-4. 이 폴더의 모든 파일을 GitHub에 업로드 (드래그 앤 드롭)
+### 1-1. 프로젝트 생성
+1. [supabase.com](https://supabase.com) → **Start your project** (GitHub 계정으로 로그인 가능)
+2. **New project** 클릭
+3. Project name: `ai-scheduler`, 비밀번호 설정, 리전: `Northeast Asia (Seoul)` 선택
+4. **Create new project** → 약 1분 대기
 
-### 2단계 — Render.com에 배포
-1. [render.com](https://render.com) 회원가입 (GitHub 계정으로 로그인 가능)
-2. **New +** → **Web Service** 클릭
-3. GitHub 저장소 연결 후 `ai-scheduler` 선택
-4. 설정 확인:
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn app:app`
-5. **Create Web Service** 클릭
-6. 배포 완료 후 `https://ai-scheduler-xxxx.onrender.com` 형태의 URL 제공
+### 1-2. 테이블 생성
+1. 좌측 메뉴 **SQL Editor** 클릭
+2. 아래 SQL을 복사해서 붙여넣기 후 **Run** 클릭
 
-> ⚠️ **주의**: Render.com 무료 플랜은 15분 비활동 후 슬립 모드 진입. 처음 접속 시 30초 정도 로딩될 수 있습니다.
+```sql
+create table events (
+  id        text primary key,
+  title     text not null,
+  date      text not null,
+  time      text,
+  end_time  text,
+  location  text,
+  note      text,
+  priority  text default 'mid',
+  created_at timestamptz default now()
+);
+
+-- 누구나 읽기/쓰기 가능하도록 허용 (개인 용도)
+alter table events enable row level security;
+create policy "allow all" on events for all using (true) with check (true);
+```
+
+### 1-3. API 키 확인
+1. 좌측 메뉴 **Project Settings** → **API** 클릭
+2. 아래 두 값을 복사해 둡니다:
+   - **Project URL**: `https://xxxxxxxxxxxx.supabase.co`
+   - **anon public** 키: `eyJhbGci...` (긴 문자열)
 
 ---
 
-## 💻 방법 2: 로컬 PC에서 실행 (같은 네트워크 접속)
+## 2단계 — Render.com 환경변수 설정
 
-### Python이 설치된 경우
+1. Render.com 대시보드 → 서비스 클릭 → **Environment** 탭
+2. **Add Environment Variable** 버튼으로 아래 2개 추가:
+
+| Key | Value |
+|-----|-------|
+| `SUPABASE_URL` | `https://xxxxxxxxxxxx.supabase.co` |
+| `SUPABASE_KEY` | `eyJhbGci...` (anon public 키) |
+
+3. **Save Changes** → 자동으로 재배포 시작
+
+---
+
+## 3단계 — GitHub 코드 업데이트
+
+`app.py`와 `requirements.txt`가 변경되었으므로 GitHub에 다시 올립니다.
+
+1. GitHub 저장소에서 `app.py` 파일 클릭 → 연필(✏️) 아이콘으로 편집
+2. 새 내용으로 교체 후 **Commit changes**
+3. `requirements.txt`도 동일하게 업데이트
+4. Render.com이 자동으로 재배포 (약 1~2분)
+
+---
+
+## 완료 확인
+
+배포 URL 접속 후 일정을 추가하고, 브라우저를 닫았다가 다시 열어도 일정이 유지되면 성공입니다.
+
+Supabase 대시보드의 **Table Editor → events** 에서 저장된 데이터를 직접 확인할 수도 있습니다.
+
+---
+
+## 로컬 테스트 (선택)
+
 ```bash
-# 의존성 설치 (최초 1회)
+# 환경변수 설정 후 실행
+export SUPABASE_URL=https://xxxxxxxxxxxx.supabase.co
+export SUPABASE_KEY=eyJhbGci...
 pip install -r requirements.txt
-
-# 서버 실행
 python app.py
 ```
-
-브라우저에서 `http://localhost:5000` 접속
-
-**같은 와이파이의 다른 기기에서 접속:**
-1. 이 PC의 IP 확인: Windows → `ipconfig` / Mac → `ifconfig`
-2. 다른 기기에서 `http://192.168.x.x:5000` 접속
-
----
-
-## 📱 모바일 접속
-
-배포 후 스마트폰 브라우저에서 Render.com URL 접속하면 모바일 최적화 UI로 동작합니다.
-
----
-
-## 🔒 데이터 보안 참고
-
-- 현재 버전은 인증 없이 누구나 접속 가능합니다
-- 개인 용도로만 사용하거나, Render.com의 환경변수로 비밀번호 보호를 추가하세요
-- 데이터는 서버의 `events.json` 파일에 저장됩니다
