@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI 일정관리</title>
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#3b5bdb">
+
+<!-- iOS PWA -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="일정관리">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root {
     --bg: #fafafa; --surface: #ffffff; --border: #e8e8e8;
@@ -185,6 +195,7 @@
     <h1>📅 AI 일정관리</h1>
     <div class="header-actions">
       <span class="save-status" id="saveStatus"><span class="save-dot" id="saveDot"></span> <span id="saveText">연결 중...</span></span>
+      <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="enableNotifications()" style="display:none;">🔔 알림 허용</button>
       <button class="btn btn-primary" onclick="openAddModal()">+ 일정 추가</button>
     </div>
   </header>
@@ -820,6 +831,22 @@ function renderAll(){
 }
 
 // ==================== INIT ====================
+let swRegistration = null;
+
+// Service Worker 등록
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    swRegistration = reg;
+    console.log('SW registered');
+  }).catch(err => console.warn('SW registration failed:', err));
+
+  // SW로부터 SNOOZE/DISMISS 메시지 수신 (알림 클릭 시)
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event.data.type === 'SNOOZE_ALARM') snoozeAlarm();
+    else if (event.data.type === 'DISMISS_ALARM') dismissAlarm();
+  });
+}
+
 loadEvents(); // startAlarmChecker() is called inside after events load
 
 
@@ -829,16 +856,53 @@ let notifiedIds = new Set(); // event IDs already notified (session)
 let snoozed = {};          // eventId -> snooze-until timestamp
 let alarmCheckInterval = null;
 
-function requestNotifPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+function updateNotifBtn() {
+  const btn = document.getElementById('notifBtn');
+  if (!btn || !('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    btn.style.display = 'none';
+  } else {
+    btn.style.display = '';
+    btn.textContent = Notification.permission === 'denied' ? '🔕 알림 차단됨' : '🔔 알림 허용';
+    btn.disabled = Notification.permission === 'denied';
   }
 }
 
-function sendBrowserNotif(title, body) {
-  if ('Notification' in window && Notification.permission === 'granted') {
-    new Notification('📅 ' + title, { body, icon: '' });
+async function enableNotifications() {
+  if (!('Notification' in window)) return showToast('이 브라우저는 알림을 지원하지 않습니다');
+  const perm = await Notification.requestPermission();
+  updateNotifBtn();
+  if (perm === 'granted') showToast('✅ 알림이 허용되었습니다');
+  else showToast('❌ 알림이 차단되었습니다. 설정에서 허용해 주세요');
+}
+
+function requestNotifPermission() {
+  // iOS는 사용자 제스처 없이 권한 요청 불가 → 버튼으로만 요청
+  updateNotifBtn();
+}
+
+async function sendBrowserNotif(title, body, tag) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts = {
+    body,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: tag || title,
+    renotify: true,
+    actions: [
+      { action: 'snooze', title: '5분 후 다시' },
+      { action: 'dismiss', title: '확인' }
+    ]
+  };
+  // Service Worker 방식 (iOS PWA 포함 가장 안정적)
+  if (swRegistration) {
+    try {
+      await swRegistration.showNotification('📅 ' + title, opts);
+      return;
+    } catch(e) { /* fallback */ }
   }
+  // 폴백: 일반 Notification
+  new Notification('📅 ' + title, { body, icon: '/icon-192.png' });
 }
 
 function checkUpcomingEvents() {
@@ -862,7 +926,7 @@ function checkUpcomingEvents() {
     if (diffMin >= 8 && diffMin <= 12 && !notifiedIds.has(notifKey)) {
       notifiedIds.add(notifKey);
       queueAlarm(e, diffMin);
-      sendBrowserNotif(e.title, `${e.time} 시작 · ${diffMin}분 후`);
+      sendBrowserNotif(e.title, `${e.time} 시작 · ${diffMin}분 후`, notifKey);
     }
 
     // Also trigger at exact time
@@ -870,7 +934,7 @@ function checkUpcomingEvents() {
     if (diffMin >= -1 && diffMin <= 1 && !notifiedIds.has(notifKeyNow)) {
       notifiedIds.add(notifKeyNow);
       queueAlarm(e, 0);
-      sendBrowserNotif(e.title, '지금 시작!');
+      sendBrowserNotif(e.title, '지금 시작!', notifKeyNow);
     }
   });
 }
