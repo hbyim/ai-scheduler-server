@@ -171,6 +171,13 @@
     .header-actions .btn-ghost { display: none; }
   }
 
+  /* Outlook / ICS events */
+  --outlook: #0078d4; --outlook-bg: #e8f4ff;
+  .event-block.outlook { background: var(--outlook-bg) !important; border-left-color: var(--outlook) !important; color: var(--outlook) !important; }
+  .week-event.outlook { background: var(--outlook-bg) !important; color: var(--outlook) !important; border-left-color: var(--outlook) !important; }
+  .month-event.outlook { background: var(--outlook-bg) !important; color: var(--outlook) !important; }
+  .ics-badge { font-size: 9px; background: var(--outlook); color: white; border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle; }
+
   /* Alarm popup */
   .alarm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 500; animation: fadeIn 0.2s ease; }
   .alarm-popup { background: white; border-radius: 16px; width: 360px; max-width: 92vw; box-shadow: 0 24px 60px rgba(0,0,0,0.2); overflow: hidden; animation: slideUp 0.25s ease; }
@@ -227,6 +234,29 @@
     <div>
       <div class="section-title">📊 우선순위 현황</div>
       <div id="priorityBreakdown" style="font-size:12px;"></div>
+    </div>
+    <div>
+      <div class="section-title">📧 Outlook 연동</div>
+      <!-- 연결된 상태 -->
+      <div id="outlookConnected" style="display:none;">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          <span style="color:#0078d4;font-size:10px;">●</span> 연결됨 · <span id="icsEventCount">0</span>개 일정
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="refreshICS()">🔄 새로고침</button>
+          <button class="btn btn-ghost btn-sm btn-danger" onclick="disconnectICS()">해제</button>
+        </div>
+      </div>
+      <!-- 연결 전 상태 -->
+      <div id="outlookDisconnected">
+        <input type="url" class="form-input" id="icsUrlInput"
+               placeholder="ICS URL 붙여넣기"
+               style="font-size:11px;margin-bottom:8px;">
+        <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;" onclick="connectICS()">📧 Outlook 연결</button>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
+          Outlook.com → 설정 → 캘린더 → 캘린더 공유 → ICS 링크 복사
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -358,7 +388,12 @@
 const API_BASE = '';
 
 // ==================== STATE ====================
-let events = [];
+let events = [];      // Supabase 로컬 일정
+let icsEvents = [];   // Outlook ICS 일정 (읽기 전용)
+let icsUrl = localStorage.getItem('icsUrl') || '';
+
+function allEvents() { return [...events, ...icsEvents]; }
+
 let currentView = 'week';
 let currentDate = new Date();
 let miniCalDate = new Date();
@@ -408,8 +443,10 @@ async function loadEvents() {
     events = await apiFetch('/api/events', {}, 40000);
     clearTimeout(wakeTimer);
     setSaveStatus('ok', `${events.length}개 일정`);
+    updateOutlookUI();
     renderAll();
     startAlarmChecker(); // start after events loaded
+    loadICSEvents();     // ICS는 별도 비동기로 (실패해도 로컬 일정에 영향 없음)
   } catch(e) {
     clearTimeout(wakeTimer);
     if (e.message === 'timeout') {
@@ -550,7 +587,7 @@ function parseNL() {
 }
 
 function generateSummary(dateStr) {
-  const evts = events.filter(e=>e.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const evts = allEvents().filter(e=>e.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const isToday = dateStr===today();
   const label = isToday?'오늘':dateStr;
   if (!evts.length) return `${label}은 일정이 없어요. ➕ 새 일정을 추가해 보세요!`;
@@ -565,17 +602,17 @@ function generateSummary(dateStr) {
 }
 
 function generateRecommendations(dateStr) {
-  const evts = events.filter(e=>e.date===dateStr&&e.time).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const evts = allEvents().filter(e=>e.date===dateStr&&e.time).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const busy = new Set();
   evts.forEach(e=>{const s=parseTime(e.time),en=parseTime(e.endTime)||s+60; for(let m=s;m<en;m+=30)busy.add(m);});
   const free=[];
   for(let h=9;h<=18;h++){const m=h*60; if(!busy.has(m)&&!busy.has(m+30))free.push(fmtTime(h,0));}
   let html='';
-  if(events.filter(e=>e.date===dateStr&&e.priority==='high').length) html+=`<div class="reco-item">⚡ 긴급 일정이 있습니다. 미리 준비하세요.</div>`;
+  if(allEvents().filter(e=>e.date===dateStr&&e.priority==='high').length) html+=`<div class="reco-item">⚡ 긴급 일정이 있습니다. 미리 준비하세요.</div>`;
   if(free.length) html+=`<div class="reco-item">🕐 집중 작업 추천: <strong>${free.slice(0,2).join(', ')}</strong></div>`;
   if(!evts.length) html+=`<div class="reco-item">✨ 오늘은 여유롭습니다. 중요 업무에 집중하기 좋아요!</div>`;
   const tom=new Date(dateStr); tom.setDate(tom.getDate()+1);
-  if(!events.filter(e=>e.date===fmtDate(tom)).length) html+=`<div class="reco-item">📅 내일은 일정 없음. 미뤄둔 업무 배치 추천!</div>`;
+  if(!allEvents().filter(e=>e.date===fmtDate(tom)).length) html+=`<div class="reco-item">📅 내일은 일정 없음. 미뤄둔 업무 배치 추천!</div>`;
   return html||'<div class="reco-item">분석할 데이터가 없습니다.</div>';
 }
 
@@ -602,7 +639,7 @@ function renderMiniCal() {
   grid.innerHTML='';
   DAYS_KO.forEach(d=>{const el=document.createElement('div');el.className='mini-cal-dow';el.textContent=d;grid.appendChild(el);});
   const first=new Date(y,m,1), last=new Date(y,m+1,0), startDow=first.getDay();
-  const todayStr=today(), eventDates=new Set(events.map(e=>e.date));
+  const todayStr=today(), eventDates=new Set(allEvents().map(e=>e.date));
   for(let i=0;i<startDow;i++){const el=document.createElement('div');el.className='mini-cal-day other-month';el.textContent=new Date(y,m,1-startDow+i).getDate();grid.appendChild(el);}
   for(let d=1;d<=last.getDate();d++){
     const el=document.createElement('div'),ds=fmtDate(new Date(y,m,d));
@@ -642,7 +679,7 @@ function renderCalendar(){
 }
 
 function renderDayView(container){
-  const ds=fmtDate(currentDate), evts=events.filter(e=>e.date===ds);
+  const ds=fmtDate(currentDate), evts=allEvents().filter(e=>e.date===ds);
   let html='<div class="day-view"><div class="day-grid"><div class="day-time-col">';
   for(let h=0;h<24;h++) html+=`<div class="day-time-slot">${h===0?'':(h<12?h+'am':h===12?'12pm':(h-12)+'pm')}</div>`;
   html+='</div><div class="day-events-col" style="position:relative;">';
@@ -650,7 +687,8 @@ function renderDayView(container){
   evts.filter(e=>e.time).forEach(e=>{
     const s=parseTime(e.time),en=e.endTime?parseTime(e.endTime):s+60;
     const top=(s/60)*60, height=Math.max(((en-s)/60)*60,22);
-    html+=`<div class="event-block priority-${e.priority}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}</div>`;
+    const oCls = e.source==='outlook'?' outlook':'';
+    html+=`<div class="event-block priority-${e.priority}${oCls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;
   });
   html+='</div></div></div>';
   container.innerHTML=html;
@@ -665,9 +703,9 @@ function renderWeekView(container){
     html+=`<div class="week-time-cell">${h<12?h+'am':h===12?'12pm':(h-12)+'pm'}</div>`;
     for(let i=0;i<7;i++){
       const d=new Date(ws);d.setDate(d.getDate()+i);const ds=fmtDate(d),ts2=fmtTime(h,0);
-      const slotEvts=events.filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
+      const slotEvts=allEvents().filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
       html+=`<div class="week-day-cell" onclick="openAddModalWithDate('${ds}','${ts2}')">`;
-      slotEvts.forEach(e=>{html+=`<div class="week-event priority-${e.priority}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}</div>`;});
+      slotEvts.forEach(e=>{const oCls=e.source==='outlook'?' outlook':'';html+=`<div class="week-event priority-${e.priority}${oCls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;});
       html+='</div>';
     }
   }
@@ -682,9 +720,9 @@ function renderMonthView(container){
   for(let i=0;i<startDow;i++){const d=new Date(y,m,1-startDow+i);html+=`<div class="month-day other-month"><div class="day-num">${d.getDate()}</div></div>`;}
   for(let d=1;d<=last.getDate();d++){
     const ds=fmtDate(new Date(y,m,d)),isT=ds===ts;
-    const evts=events.filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
+    const evts=allEvents().filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
     html+=`<div class="month-day${isT?' is-today':''}" onclick="openAddModalWithDate('${ds}')"><div class="day-num">${d}</div>`;
-    evts.slice(0,3).forEach(e=>{html+=`<div class="month-event priority-${e.priority}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}</div>`;});
+    evts.slice(0,3).forEach(e=>{const oCls=e.source==='outlook'?' outlook':'';html+=`<div class="month-event priority-${e.priority}${oCls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;});
     if(evts.length>3) html+=`<div class="more-events">+${evts.length-3}개</div>`;
     html+='</div>';
   }
@@ -752,7 +790,7 @@ async function saveEvent(){
 }
 
 function showDetail(id){
-  const e=events.find(ev=>ev.id===id);
+  const e=allEvents().find(ev=>ev.id===id);
   if(!e)return;
   currentEventId=id;
   const tagBg={high:'var(--high-bg)',mid:'var(--mid-bg)',low:'var(--low-bg)'};
@@ -770,9 +808,12 @@ function showDetail(id){
   body+=`<div style="background:var(--accent-light);border:1px solid #c5d2fc;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12px;color:#374499;"><strong>🤖 AI 인사이트:</strong> ${insight}</div>`;
   document.getElementById('detailBody').innerHTML=body;
 
-  // Enable buttons explicitly
-  document.getElementById('deleteBtn').disabled=false;
-  document.getElementById('editBtn').disabled=false;
+  // Outlook(ICS) 이벤트는 읽기 전용
+  const isOutlook = e.source === 'outlook';
+  document.getElementById('deleteBtn').style.display = isOutlook ? 'none' : '';
+  document.getElementById('editBtn').style.display   = isOutlook ? 'none' : '';
+  document.getElementById('deleteBtn').disabled = false;
+  document.getElementById('editBtn').disabled   = false;
   document.getElementById('detailModal').style.display='flex';
 }
 
@@ -828,6 +869,111 @@ function renderAll(){
   const ds=fmtDate(currentDate);
   document.getElementById('aiSummaryText').innerHTML=generateSummary(ds);
   document.getElementById('aiRecoText').innerHTML=generateRecommendations(ds);
+}
+
+// ==================== ICS / OUTLOOK ====================
+function parseICS(text) {
+  const result = [];
+  // RFC 5545 line unfolding: CRLF + whitespace = continuation
+  const unfolded = text.replace(/\r\n[ \t]/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = unfolded.split('\n');
+  let cur = null;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line === 'BEGIN:VEVENT') { cur = {}; continue; }
+    if (line === 'END:VEVENT')   { if (cur) { result.push(cur); } cur = null; continue; }
+    if (!cur) continue;
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    const keyFull = line.substring(0, colonIdx);
+    const value   = line.substring(colonIdx + 1);
+    const key     = keyFull.split(';')[0].toUpperCase();
+    const unescape = s => s.replace(/\\n/g, ' ').replace(/\\,/g, ',').replace(/\\\\/g, '\\');
+    if      (key === 'SUMMARY')     cur.title    = unescape(value);
+    else if (key === 'DTSTART')     cur.dtstart  = value;
+    else if (key === 'DTEND')       cur.dtend    = value;
+    else if (key === 'LOCATION')    cur.location = unescape(value);
+    else if (key === 'DESCRIPTION') cur.note     = unescape(value).substring(0, 200);
+    else if (key === 'UID')         cur.uid      = value;
+  }
+  return result;
+}
+
+function icsDateToApp(str) {
+  if (!str) return { date: null, time: null };
+  const datePart = str.substring(0, 8);
+  const date = `${datePart.slice(0,4)}-${datePart.slice(4,6)}-${datePart.slice(6,8)}`;
+  if (str.length <= 8 || str[8] !== 'T') return { date, time: null }; // all-day
+  const timePart = str.substring(9);
+  const h = parseInt(timePart.substring(0,2));
+  const m = parseInt(timePart.substring(2,4));
+  if (timePart.endsWith('Z')) {
+    // UTC → KST (+9)
+    const d = new Date(Date.UTC(
+      parseInt(datePart.slice(0,4)), parseInt(datePart.slice(4,6))-1, parseInt(datePart.slice(6,8)), h, m
+    ));
+    d.setTime(d.getTime() + 9*60*60*1000);
+    const p = n => String(n).padStart(2,'0');
+    return { date:`${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}`, time:`${p(d.getUTCHours())}:${p(d.getUTCMinutes())}` };
+  }
+  return { date, time:`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}` };
+}
+
+function icsToAppEvent(raw) {
+  if (!raw.title || !raw.dtstart) return null;
+  const start = icsDateToApp(raw.dtstart);
+  const end   = icsDateToApp(raw.dtend);
+  if (!start.date) return null;
+  return {
+    id: 'ics_' + (raw.uid ? raw.uid.replace(/[^a-zA-Z0-9]/g,'').slice(-16) : Math.random().toString(36).slice(2)),
+    title: raw.title, date: start.date, time: start.time, endTime: end.time,
+    location: raw.location||null, note: raw.note||null, priority: 'mid', source: 'outlook'
+  };
+}
+
+async function loadICSEvents() {
+  if (!icsUrl) return;
+  try {
+    const res = await fetch(`/api/fetch-ics?url=${encodeURIComponent(icsUrl)}`);
+    if (!res.ok) throw new Error('fetch failed');
+    const text = await res.text();
+    icsEvents = parseICS(text).map(icsToAppEvent).filter(Boolean);
+    updateOutlookUI();
+    renderAll();
+  } catch(e) {
+    console.warn('ICS load error:', e);
+    showToast('⚠️ Outlook 일정을 불러오지 못했습니다');
+  }
+}
+
+function updateOutlookUI() {
+  const connected = !!icsUrl;
+  document.getElementById('outlookConnected').style.display  = connected ? '' : 'none';
+  document.getElementById('outlookDisconnected').style.display = connected ? 'none' : '';
+  if (connected) document.getElementById('icsEventCount').textContent = icsEvents.length;
+}
+
+function connectICS() {
+  const url = document.getElementById('icsUrlInput').value.trim();
+  if (!url.startsWith('http')) return showToast('⚠️ 올바른 ICS URL을 입력해 주세요');
+  icsUrl = url;
+  localStorage.setItem('icsUrl', url);
+  updateOutlookUI();
+  loadICSEvents();
+  showToast('📧 Outlook 연결 중...');
+}
+
+function disconnectICS() {
+  icsUrl = ''; icsEvents = [];
+  localStorage.removeItem('icsUrl');
+  updateOutlookUI();
+  renderAll();
+  showToast('Outlook 연결이 해제되었습니다');
+}
+
+async function refreshICS() {
+  await loadICSEvents();
+  showToast('✅ Outlook 일정을 새로고침했습니다');
 }
 
 // ==================== INIT ====================
@@ -910,7 +1056,7 @@ function checkUpcomingEvents() {
   const todayStr = fmtDate(now);
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
-  events.forEach(e => {
+  allEvents().forEach(e => {
     if (!e.time) return;
     if (e.date !== todayStr) return;
 
