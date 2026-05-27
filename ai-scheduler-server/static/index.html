@@ -160,6 +160,23 @@
     .view-title { font-size: 15px; }
     .header-actions .btn-ghost { display: none; }
   }
+
+  /* Alarm popup */
+  .alarm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 500; animation: fadeIn 0.2s ease; }
+  .alarm-popup { background: white; border-radius: 16px; width: 360px; max-width: 92vw; box-shadow: 0 24px 60px rgba(0,0,0,0.2); overflow: hidden; animation: slideUp 0.25s ease; }
+  .alarm-header { background: linear-gradient(135deg, #e03131, #c92a2a); color: white; padding: 18px 20px 14px; display: flex; align-items: center; gap: 10px; }
+  .alarm-bell { font-size: 28px; animation: ring 0.5s ease infinite alternate; }
+  @keyframes ring { from { transform: rotate(-15deg); } to { transform: rotate(15deg); } }
+  .alarm-header-text h3 { font-size: 15px; font-weight: 600; }
+  .alarm-header-text p { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+  .alarm-body { padding: 16px 20px; }
+  .alarm-event-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .alarm-event-meta { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--text-muted); }
+  .alarm-event-meta span { display: flex; align-items: center; gap: 6px; }
+  .alarm-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  .alarm-queue-badge { position: fixed; bottom: 24px; right: 24px; background: #e03131; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(224,49,49,0.4); z-index: 400; animation: pulse 1.5s ease infinite; display: none; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+
 </style>
 </head>
 <body>
@@ -757,6 +774,151 @@ function renderAll(){
 
 // ==================== INIT ====================
 loadEvents();
+startAlarmChecker();
+
+
+// ==================== ALARM / NOTIFICATION ====================
+let alarmQueue = [];       // pending alarms to show
+let notifiedIds = new Set(); // event IDs already notified (session)
+let snoozed = {};          // eventId -> snooze-until timestamp
+let alarmCheckInterval = null;
+
+function requestNotifPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function sendBrowserNotif(title, body) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('📅 ' + title, { body, icon: '' });
+  }
+}
+
+function checkUpcomingEvents() {
+  const now = new Date();
+  const todayStr = fmtDate(now);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  events.forEach(e => {
+    if (!e.time) return;
+    if (e.date !== todayStr) return;
+
+    const eventMin = parseTime(e.time);
+    const diffMin = eventMin - nowMin;
+    const notifKey = e.id + '_10';
+    const snoozeKey = e.id;
+
+    // Check snooze
+    if (snoozed[snoozeKey] && Date.now() < snoozed[snoozeKey]) return;
+
+    // Trigger at 10 min before (window: 9.5~10.5 min)
+    if (diffMin >= 9 && diffMin <= 11 && !notifiedIds.has(notifKey)) {
+      notifiedIds.add(notifKey);
+      queueAlarm(e, diffMin);
+      sendBrowserNotif(e.title, `${e.time} 시작 · ${diffMin}분 후`);
+    }
+
+    // Also trigger at exact time
+    const notifKeyNow = e.id + '_0';
+    if (diffMin >= -1 && diffMin <= 1 && !notifiedIds.has(notifKeyNow)) {
+      notifiedIds.add(notifKeyNow);
+      queueAlarm(e, 0);
+      sendBrowserNotif(e.title, '지금 시작!');
+    }
+  });
+}
+
+function queueAlarm(event, diffMin) {
+  alarmQueue.push({ event, diffMin });
+  updateAlarmBadge();
+  if (alarmQueue.length === 1) showNextAlarm();
+}
+
+function showNextAlarm() {
+  if (!alarmQueue.length) return;
+  const { event: e, diffMin } = alarmQueue[0];
+
+  document.getElementById('alarmTitle').textContent = e.title;
+  document.getElementById('alarmCountText').textContent =
+    diffMin <= 1 ? '지금 시작!' : `${diffMin}분 후 시작`;
+
+  const d = new Date(e.date + 'T00:00:00');
+  const DAYS = ['일','월','화','수','목','금','토'];
+  let meta = `<span>🕐 ${e.time}${e.endTime ? ' – ' + e.endTime : ''}</span>`;
+  meta += `<span>📅 ${d.getMonth()+1}월 ${d.getDate()}일 (${DAYS[d.getDay()]})</span>`;
+  if (e.location) meta += `<span>📍 ${e.location}</span>`;
+  document.getElementById('alarmMeta').innerHTML = meta;
+
+  // Priority color
+  const colors = { high: '#e03131', mid: '#f59f00', low: '#2f9e44' };
+  document.querySelector('.alarm-header').style.background =
+    `linear-gradient(135deg, ${colors[e.priority] || colors.mid}, ${colors[e.priority] || colors.mid}cc)`;
+
+  document.getElementById('alarmOverlay').style.display = 'flex';
+  updateAlarmBadge();
+}
+
+function dismissAlarm() {
+  alarmQueue.shift();
+  document.getElementById('alarmOverlay').style.display = 'none';
+  updateAlarmBadge();
+  if (alarmQueue.length > 0) {
+    setTimeout(showNextAlarm, 400);
+  }
+}
+
+function snoozeAlarm() {
+  if (!alarmQueue.length) return;
+  const { event: e } = alarmQueue[0];
+  snoozed[e.id] = Date.now() + 5 * 60 * 1000; // snooze 5 min
+  // Remove from notified so it can re-trigger after snooze
+  notifiedIds.delete(e.id + '_10');
+  notifiedIds.delete(e.id + '_0');
+  dismissAlarm();
+  showToast('⏰ 5분 후에 다시 알려드릴게요');
+}
+
+function updateAlarmBadge() {
+  const badge = document.getElementById('alarmBadge');
+  const remaining = alarmQueue.length;
+  if (remaining > 1) {
+    badge.style.display = 'flex';
+    badge.textContent = remaining;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function startAlarmChecker() {
+  requestNotifPermission();
+  checkUpcomingEvents(); // run immediately
+  alarmCheckInterval = setInterval(checkUpcomingEvents, 60 * 1000); // every minute
+}
+
 </script>
+
+<!-- Alarm Popup -->
+<div class="alarm-overlay" id="alarmOverlay" style="display:none;">
+  <div class="alarm-popup">
+    <div class="alarm-header">
+      <span class="alarm-bell">🔔</span>
+      <div class="alarm-header-text">
+        <h3>일정 알림</h3>
+        <p id="alarmCountText">10분 후 시작</p>
+      </div>
+    </div>
+    <div class="alarm-body">
+      <div class="alarm-event-title" id="alarmTitle"></div>
+      <div class="alarm-event-meta" id="alarmMeta"></div>
+    </div>
+    <div class="alarm-footer">
+      <button class="btn btn-ghost btn-sm" onclick="snoozeAlarm()">5분 후 다시</button>
+      <button class="btn btn-primary btn-sm" onclick="dismissAlarm()">확인</button>
+    </div>
+  </div>
+</div>
+<div class="alarm-queue-badge" id="alarmBadge" onclick="showNextAlarm()"></div>
+
 </body>
 </html>
