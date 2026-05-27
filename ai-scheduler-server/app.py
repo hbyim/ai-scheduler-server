@@ -6,25 +6,30 @@ import requests as req
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
-SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
 TABLE = 'events'
 
-def sb_headers():
+def get_config():
+    # 환경변수를 매 요청 시 읽어 재배포 없이도 최신값 반영
+    url = os.environ.get('SUPABASE_URL', '').rstrip('/')
+    key = os.environ.get('SUPABASE_KEY', '')
+    return url, key
+
+def sb_headers(key):
     return {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'apikey': key,
+        'Authorization': f'Bearer {key}',
         'Content-Type': 'application/json',
         'Prefer': 'return=representation',
     }
 
-def sb_url(suffix=''):
-    return f'{SUPABASE_URL}/rest/v1/{TABLE}{suffix}'
+def sb_url(url, suffix=''):
+    return f'{url}/rest/v1/{TABLE}{suffix}'
 
 def check_config():
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return False, 'SUPABASE_URL 또는 SUPABASE_KEY 환경변수가 설정되지 않았습니다. Render.com > Environment 탭에서 추가해주세요.'
-    return True, 'ok'
+    url, key = get_config()
+    if not url or not key:
+        return False, None, None, 'SUPABASE_URL 또는 SUPABASE_KEY 환경변수가 설정되지 않았습니다.'
+    return True, url, key, 'ok'
 
 def to_db(e):
     return {
@@ -54,78 +59,82 @@ def to_front(e):
 def index():
     return send_from_directory('static', 'index.html')
 
-# 설정 상태 확인용 엔드포인트
 @app.route('/api/health')
 def health():
-    ok, msg = check_config()
+    ok, url, key, msg = check_config()
     if not ok:
         return jsonify({'status': 'error', 'message': msg}), 503
     try:
-        r = req.get(sb_url(), headers=sb_headers(), params={'limit': '1'}, timeout=5)
+        r = req.get(sb_url(url), headers=sb_headers(key), params={'limit': '1'}, timeout=5)
         if r.ok:
             return jsonify({'status': 'ok', 'supabase': 'connected'})
-        return jsonify({'status': 'error', 'message': f'Supabase 응답 오류: {r.status_code} {r.text}'}), 503
+        return jsonify({'status': 'error', 'message': f'Supabase {r.status_code}: {r.text}'}), 503
     except Exception as e:
-        return jsonify({'status': 'error', 'message': f'Supabase 연결 실패: {str(e)}'}), 503
+        return jsonify({'status': 'error', 'message': str(e)}), 503
 
 @app.route('/api/events', methods=['GET'])
 def get_events():
-    ok, msg = check_config()
+    ok, url, key, msg = check_config()
     if not ok:
         return jsonify({'error': msg}), 503
     try:
-        r = req.get(sb_url(), headers=sb_headers(), params={'order': 'date.asc,time.asc'}, timeout=10)
+        r = req.get(sb_url(url), headers=sb_headers(key),
+                    params={'order': 'date.asc,time.asc'}, timeout=10)
         if not r.ok:
-            return jsonify({'error': f'Supabase 오류: {r.status_code} - {r.text}'}), 500
+            return jsonify({'error': f'Supabase {r.status_code}: {r.text}'}), 500
         return jsonify([to_front(e) for e in r.json()])
     except Exception as e:
-        return jsonify({'error': f'연결 실패: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/events', methods=['POST'])
 def create_event():
-    ok, msg = check_config()
+    ok, url, key, msg = check_config()
     if not ok:
         return jsonify({'error': msg}), 503
     try:
         data = request.get_json()
         if not data.get('id'):
             data['id'] = str(uuid.uuid4())[:8]
-        r = req.post(sb_url(), headers=sb_headers(), json=to_db(data), timeout=10)
+        db_row = to_db(data)
+        r = req.post(sb_url(url), headers=sb_headers(key), json=db_row, timeout=10)
         if not r.ok:
-            return jsonify({'error': f'Supabase 오류: {r.status_code} - {r.text}'}), 500
+            return jsonify({'error': f'Supabase {r.status_code}: {r.text}'}), 500
         rows = r.json()
-        return jsonify(to_front(rows[0] if rows else data)), 201
+        return jsonify(to_front(rows[0] if rows else db_row)), 201
     except Exception as e:
-        return jsonify({'error': f'연결 실패: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/events/<event_id>', methods=['PUT'])
 def update_event(event_id):
-    ok, msg = check_config()
+    ok, url, key, msg = check_config()
     if not ok:
         return jsonify({'error': msg}), 503
     try:
         data = request.get_json()
         data['id'] = event_id
-        r = req.patch(sb_url(f'?id=eq.{event_id}'), headers=sb_headers(), json=to_db(data), timeout=10)
+        db_row = to_db(data)
+        r = req.patch(sb_url(url, f'?id=eq.{event_id}'),
+                      headers=sb_headers(key), json=db_row, timeout=10)
         if not r.ok:
-            return jsonify({'error': f'Supabase 오류: {r.status_code} - {r.text}'}), 500
+            return jsonify({'error': f'Supabase {r.status_code}: {r.text}'}), 500
         rows = r.json()
-        return jsonify(to_front(rows[0] if rows else data))
+        return jsonify(to_front(rows[0] if rows else db_row))
     except Exception as e:
-        return jsonify({'error': f'연결 실패: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
-    ok, msg = check_config()
+    ok, url, key, msg = check_config()
     if not ok:
         return jsonify({'error': msg}), 503
     try:
-        r = req.delete(sb_url(f'?id=eq.{event_id}'), headers=sb_headers(), timeout=10)
+        r = req.delete(sb_url(url, f'?id=eq.{event_id}'),
+                       headers=sb_headers(key), timeout=10)
         if not r.ok:
-            return jsonify({'error': f'Supabase 오류: {r.status_code} - {r.text}'}), 500
+            return jsonify({'error': f'Supabase {r.status_code}: {r.text}'}), 500
         return jsonify({'ok': True})
     except Exception as e:
-        return jsonify({'error': f'연결 실패: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
