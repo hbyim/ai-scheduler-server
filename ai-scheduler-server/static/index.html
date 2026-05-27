@@ -273,17 +273,17 @@
         </div>
         <div style="display:flex;gap:6px;">
           <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="refreshGCal()">🔄 새로고침</button>
-          <button class="btn btn-ghost btn-sm btn-danger" onclick="disconnectGCal()">해제</button>
+          <button class="btn btn-ghost btn-sm btn-danger" onclick="logoutGCal()">로그아웃</button>
         </div>
       </div>
-      <!-- 연결 전 상태 -->
+      <!-- 로그인 전 -->
       <div id="gcalDisconnected">
-        <input type="url" class="form-input" id="gcalUrlInput"
-               placeholder="Google ICS URL 붙여넣기"
-               style="font-size:11px;margin-bottom:8px;">
-        <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;background:#34a853;" onclick="connectGCal()">📅 Google 캘린더 연결</button>
+        <button class="btn btn-primary btn-sm" onclick="loginWithGoogle()"
+                style="width:100%;font-size:12px;background:#34a853;border:none;display:flex;align-items:center;justify-content:center;gap:6px;">
+          <span style="font-weight:700;font-size:14px;">G</span> Google로 로그인
+        </button>
         <div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
-          Google 캘린더 → 설정 → 캘린더 설정 → "비밀 주소(iCal 형식)" 복사
+          읽기·쓰기·수정·삭제 모두 지원
         </div>
       </div>
     </div>
@@ -359,6 +359,15 @@
         <label class="form-label">메모</label>
         <input type="text" class="form-input" id="eventNote" placeholder="간단한 메모 (선택)">
       </div>
+      <!-- Google 연동 시에만 표시 -->
+      <div class="form-group" id="saveTargetGroup" style="display:none;">
+        <label class="form-label">💾 저장 위치</label>
+        <div class="priority-selector">
+          <button class="priority-btn low active" id="saveLocal" onclick="setSaveTarget('local')" type="button">🗄 앱에만</button>
+          <button class="priority-btn low" id="saveGcal" onclick="setSaveTarget('gcal')" type="button">📅 Google 캘린더</button>
+        </div>
+        <input type="hidden" id="saveTarget" value="local">
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('addModal')">취소</button>
@@ -417,11 +426,11 @@
 const API_BASE = '';
 
 // ==================== STATE ====================
-let events = [];       // Supabase 로컬 일정
-let icsEvents = [];    // Outlook ICS 일정 (읽기 전용)
-let gcalEvents = [];   // Google Calendar ICS 일정 (읽기 전용)
-let icsUrl  = localStorage.getItem('icsUrl')  || '';
-let gcalUrl = localStorage.getItem('gcalUrl') || '';
+let events = [];          // Supabase 로컬 일정
+let icsEvents = [];       // Outlook ICS 일정 (읽기 전용)
+let gcalEvents = [];      // Google Calendar 일정 (OAuth API, 편집 가능)
+let icsUrl = localStorage.getItem('icsUrl') || '';
+let gcalAuthenticated = false;
 
 function allEvents() { return [...events, ...icsEvents, ...gcalEvents]; }
 
@@ -485,8 +494,8 @@ async function loadEvents() {
     updateGCalUI();
     renderAll();
     startAlarmChecker(); // start after events loaded
-    loadICSEvents();     // 외부 캘린더는 별도 비동기 (실패해도 로컬에 영향 없음)
-    loadGCalEvents();
+    loadICSEvents();   // Outlook ICS (별도 비동기)
+    checkGCalAuth();   // Google Calendar OAuth 인증 확인 후 자동 로드
   } catch(e) {
     clearTimeout(wakeTimer);
     if (e.message === 'timeout') {
@@ -784,6 +793,9 @@ function openAddModal(){
   document.getElementById('nlInput').value='';
   document.getElementById('nlParseResult').style.display='none';
   selectPriority('mid');
+  // 신규 추가 시 Google 로그인 돼 있으면 저장 위치 선택 표시
+  const stg = document.getElementById('saveTargetGroup');
+  if (stg) { stg.style.display = gcalAuthenticated ? '' : 'none'; setSaveTarget('local'); }
   document.getElementById('addModal').style.display='flex';
 }
 
@@ -820,8 +832,36 @@ async function saveEvent(){
       note: document.getElementById('eventNote').value.trim()||null,
       priority: selectedPriority
     };
-    if(editingEventId){ await apiUpdate(editingEventId,evt); }
-    else { await apiCreate(evt); }
+    if (editingEventId && editingEventId.startsWith('gcal_')) {
+      // ── Google Calendar 수정 ──
+      const gcalEv = gcalEvents.find(e => e.id === editingEventId);
+      if (!gcalEv?.gcalId) throw new Error('gcalId missing');
+      setSaveStatus('saving', '수정 중...');
+      const res = await fetch(`/api/gcal/events/${gcalEv.gcalId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(evt)
+      });
+      if (!res.ok) throw new Error(`gcal update ${res.status}`);
+      const updated = await res.json();
+      const idx = gcalEvents.findIndex(e => e.id === editingEventId);
+      if (idx >= 0) gcalEvents[idx] = updated;
+      setSaveStatus('ok', `${events.length}개 일정`);
+    } else if (editingEventId) {
+      // ── 로컬(Supabase) 수정 ──
+      await apiUpdate(editingEventId, evt);
+    } else if ((document.getElementById('saveTarget')?.value || 'local') === 'gcal' && gcalAuthenticated) {
+      // ── Google Calendar 신규 생성 ──
+      setSaveStatus('saving', 'Google에 저장 중...');
+      const res = await fetch('/api/gcal/events', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(evt)
+      });
+      if (!res.ok) throw new Error(`gcal create ${res.status}`);
+      gcalEvents.push(await res.json());
+      setSaveStatus('ok', `${events.length}개 일정`);
+      document.getElementById('gcalEventCount').textContent = gcalEvents.length;
+    } else {
+      // ── 로컬(Supabase) 신규 생성 ──
+      await apiCreate(evt);
+    }
     closeModal('addModal');
     renderAll();
     showToast(editingEventId?'✅ 일정이 수정되었습니다':'✅ 일정이 추가되었습니다');
@@ -848,10 +888,10 @@ function showDetail(id){
   body+=`<div style="background:var(--accent-light);border:1px solid #c5d2fc;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12px;color:#374499;"><strong>🤖 AI 인사이트:</strong> ${insight}</div>`;
   document.getElementById('detailBody').innerHTML=body;
 
-  // 외부 캘린더(Outlook/Google) 이벤트는 읽기 전용
-  const isExternal = !!e.source;
-  document.getElementById('deleteBtn').style.display = isExternal ? 'none' : '';
-  document.getElementById('editBtn').style.display   = isExternal ? 'none' : '';
+  // Outlook만 읽기 전용, Google Calendar는 편집 가능
+  const isReadOnly = e.source === 'outlook';
+  document.getElementById('deleteBtn').style.display = isReadOnly ? 'none' : '';
+  document.getElementById('editBtn').style.display   = isReadOnly ? 'none' : '';
   document.getElementById('deleteBtn').disabled = false;
   document.getElementById('editBtn').disabled   = false;
   document.getElementById('detailModal').style.display='flex';
@@ -876,7 +916,19 @@ async function deleteCurrentEvent(){
   const btn=document.getElementById('deleteBtn');
   btn.disabled=true; btn.textContent='삭제 중...';
   try {
-    await apiDelete(currentEventId);
+    if (currentEventId.startsWith('gcal_')) {
+      // ── Google Calendar 삭제 ──
+      const gcalEv = gcalEvents.find(e => e.id === currentEventId);
+      if (!gcalEv?.gcalId) throw new Error('gcalId missing');
+      setSaveStatus('saving', '삭제 중...');
+      const res = await fetch(`/api/gcal/events/${gcalEv.gcalId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`gcal delete ${res.status}`);
+      gcalEvents = gcalEvents.filter(e => e.id !== currentEventId);
+      setSaveStatus('ok', `${events.length}개 일정`);
+      document.getElementById('gcalEventCount').textContent = gcalEvents.length;
+    } else {
+      await apiDelete(currentEventId);
+    }
     closeModal('detailModal');
     renderAll();
     showToast('🗑 일정이 삭제되었습니다');
@@ -884,7 +936,7 @@ async function deleteCurrentEvent(){
 }
 
 async function editCurrentEvent(){
-  const e=events.find(ev=>ev.id===currentEventId);
+  const e=allEvents().find(ev=>ev.id===currentEventId);
   if(!e) return;
   closeModal('detailModal');
   editingEventId=e.id;
@@ -898,6 +950,9 @@ async function editCurrentEvent(){
   document.getElementById('nlInput').value='';
   document.getElementById('nlParseResult').style.display='none';
   selectPriority(e.priority||'mid');
+  // 수정 시에는 저장 위치 선택 숨김
+  const stg = document.getElementById('saveTargetGroup');
+  if (stg) stg.style.display = 'none';
   document.getElementById('addModal').style.display='flex';
 }
 
@@ -993,18 +1048,24 @@ function updateOutlookUI() {
   if (connected) document.getElementById('icsEventCount').textContent = icsEvents.length;
 }
 
-// ---------- Google Calendar ----------
-async function loadGCalEvents() {
-  if (!gcalUrl) return;
+// ---------- Google Calendar (OAuth API) ----------
+async function checkGCalAuth() {
   try {
-    const res = await fetch(`/api/fetch-ics?url=${encodeURIComponent(gcalUrl)}`);
-    if (!res.ok) throw new Error('fetch failed');
-    const text = await res.text();
-    gcalEvents = parseICS(text).map(raw => {
-      const ev = icsToAppEvent(raw);
-      if (ev) ev.source = 'gcal';
-      return ev;
-    }).filter(Boolean);
+    const r = await fetch('/api/auth/status');
+    const data = await r.json();
+    gcalAuthenticated = data.authenticated;
+  } catch(e) { gcalAuthenticated = false; }
+  updateGCalUI();
+  if (gcalAuthenticated) loadGCalEvents();
+}
+
+async function loadGCalEvents() {
+  if (!gcalAuthenticated) return;
+  try {
+    const r = await fetch('/api/gcal/events');
+    if (r.status === 401) { gcalAuthenticated = false; updateGCalUI(); return; }
+    if (!r.ok) throw new Error('gcal fetch failed');
+    gcalEvents = await r.json();
     updateGCalUI();
     renderAll();
   } catch(e) {
@@ -1014,25 +1075,39 @@ async function loadGCalEvents() {
 }
 
 function updateGCalUI() {
-  const connected = !!gcalUrl;
-  document.getElementById('gcalConnected').style.display   = connected ? '' : 'none';
-  document.getElementById('gcalDisconnected').style.display = connected ? 'none' : '';
-  if (connected) document.getElementById('gcalEventCount').textContent = gcalEvents.length;
+  document.getElementById('gcalConnected').style.display    = gcalAuthenticated ? '' : 'none';
+  document.getElementById('gcalDisconnected').style.display = gcalAuthenticated ? 'none' : '';
+  if (gcalAuthenticated) document.getElementById('gcalEventCount').textContent = gcalEvents.length;
+  // 저장 위치 선택기 표시 여부 갱신
+  const stg = document.getElementById('saveTargetGroup');
+  if (stg && !editingEventId) stg.style.display = gcalAuthenticated ? '' : 'none';
 }
 
-function connectGCal() {
-  const url = document.getElementById('gcalUrlInput').value.trim();
-  if (!url.startsWith('http')) return showToast('⚠️ 올바른 ICS URL을 입력해 주세요');
-  gcalUrl = url;
-  localStorage.setItem('gcalUrl', url);
-  updateGCalUI();
-  loadGCalEvents();
-  showToast('📅 Google 캘린더 연결 중...');
+function loginWithGoogle() {
+  fetch('/api/auth/google').then(r => r.json()).then(({ url, error }) => {
+    if (error) return showToast('❌ ' + error);
+    const popup = window.open(url, 'google-auth', 'width=520,height=620,left=200,top=100');
+    const onMsg = async (e) => {
+      if (e.data === 'google_auth_success') {
+        window.removeEventListener('message', onMsg);
+        gcalAuthenticated = true;
+        updateGCalUI();
+        await loadGCalEvents();
+        showToast('✅ Google 캘린더가 연결되었습니다');
+      } else if (e.data === 'google_auth_error') {
+        window.removeEventListener('message', onMsg);
+        showToast('❌ Google 로그인에 실패했습니다');
+      }
+    };
+    window.addEventListener('message', onMsg);
+    // 팝업이 닫히면 리스너 정리
+    const timer = setInterval(() => { if (popup.closed) { clearInterval(timer); window.removeEventListener('message', onMsg); } }, 500);
+  }).catch(() => showToast('❌ 서버 오류'));
 }
 
-function disconnectGCal() {
-  gcalUrl = ''; gcalEvents = [];
-  localStorage.removeItem('gcalUrl');
+async function logoutGCal() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  gcalAuthenticated = false; gcalEvents = [];
   updateGCalUI();
   renderAll();
   showToast('Google 캘린더 연결이 해제되었습니다');
@@ -1041,6 +1116,12 @@ function disconnectGCal() {
 async function refreshGCal() {
   await loadGCalEvents();
   showToast('✅ Google 캘린더를 새로고침했습니다');
+}
+
+function setSaveTarget(target) {
+  document.getElementById('saveTarget').value = target;
+  document.getElementById('saveLocal').className = `priority-btn low${target === 'local' ? ' active' : ''}`;
+  document.getElementById('saveGcal').className  = `priority-btn low${target === 'gcal'  ? ' active' : ''}`;
 }
 
 // ---------- Outlook ----------
