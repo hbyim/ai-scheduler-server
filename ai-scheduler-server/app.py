@@ -136,6 +136,21 @@ def delete_event(event_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/fetch-ics')
+def fetch_ics():
+    url = request.args.get('url', '').strip()
+    if not url.startswith('http'):
+        return jsonify({'error': 'Invalid URL'}), 400
+    try:
+        r = req.get(url, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; AI-Scheduler/1.0)'
+        })
+        if not r.ok:
+            return jsonify({'error': f'ICS fetch failed: {r.status_code}'}), 500
+        return r.text, 200, {'Content-Type': 'text/calendar; charset=utf-8'}
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
