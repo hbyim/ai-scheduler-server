@@ -341,7 +341,7 @@
 </div>
 <div class="alarm-queue-badge" id="alarmBadge" onclick="showNextAlarm()"></div>
 
-<script>>
+<script>
 // ==================== CONFIG ====================
 // Auto-detect API base: empty string = same origin (production), or set explicitly
 const API_BASE = '';
@@ -366,25 +366,48 @@ function setSaveStatus(state, text) {
   txt.textContent = text;
 }
 
-async function apiFetch(path, options = {}) {
-  const res = await fetch(API_BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+async function apiFetch(path, options = {}, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(API_BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+      signal: controller.signal,   // must come after ...options spread
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error('timeout');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function loadEvents() {
+  setSaveStatus('saving', '연결 중...');
+  // After 4 s still waiting → tell user Render free tier is waking up
+  const wakeTimer = setTimeout(
+    () => setSaveStatus('saving', '서버 깨우는 중... (최대 30초)'),
+    4000
+  );
   try {
-    setSaveStatus('saving', '로딩 중...');
-    events = await apiFetch('/api/events');
+    // Give Render cold-start up to 40 seconds before giving up
+    events = await apiFetch('/api/events', {}, 40000);
+    clearTimeout(wakeTimer);
     setSaveStatus('ok', `${events.length}개 일정`);
     renderAll();
     startAlarmChecker(); // start after events loaded
   } catch(e) {
-    setSaveStatus('error', '서버 연결 실패');
-    showToast('❌ 서버에 연결할 수 없습니다');
+    clearTimeout(wakeTimer);
+    if (e.message === 'timeout') {
+      setSaveStatus('error', '연결 시간 초과');
+      showToast('❌ 서버 응답 없음 — 잠시 후 새로고침 해주세요', 6000);
+    } else {
+      setSaveStatus('error', '서버 연결 실패');
+      showToast('❌ 서버에 연결할 수 없습니다');
+    }
   }
 }
 
