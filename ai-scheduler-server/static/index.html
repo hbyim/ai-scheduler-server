@@ -318,7 +318,30 @@
   </div>
 </div>
 
-<script>
+
+<!-- Alarm Popup -->
+<div class="alarm-overlay" id="alarmOverlay" style="display:none;">
+  <div class="alarm-popup">
+    <div class="alarm-header">
+      <span class="alarm-bell">🔔</span>
+      <div class="alarm-header-text">
+        <h3>일정 알림</h3>
+        <p id="alarmCountText">10분 후 시작</p>
+      </div>
+    </div>
+    <div class="alarm-body">
+      <div class="alarm-event-title" id="alarmTitle"></div>
+      <div class="alarm-event-meta" id="alarmMeta"></div>
+    </div>
+    <div class="alarm-footer">
+      <button class="btn btn-ghost btn-sm" onclick="snoozeAlarm()">5분 후 다시</button>
+      <button class="btn btn-primary btn-sm" onclick="dismissAlarm()">확인</button>
+    </div>
+  </div>
+</div>
+<div class="alarm-queue-badge" id="alarmBadge" onclick="showNextAlarm()"></div>
+
+<script>>
 // ==================== CONFIG ====================
 // Auto-detect API base: empty string = same origin (production), or set explicitly
 const API_BASE = '';
@@ -358,6 +381,7 @@ async function loadEvents() {
     events = await apiFetch('/api/events');
     setSaveStatus('ok', `${events.length}개 일정`);
     renderAll();
+    startAlarmChecker(); // start after events loaded
   } catch(e) {
     setSaveStatus('error', '서버 연결 실패');
     showToast('❌ 서버에 연결할 수 없습니다');
@@ -773,8 +797,7 @@ function renderAll(){
 }
 
 // ==================== INIT ====================
-loadEvents();
-startAlarmChecker();
+loadEvents(); // startAlarmChecker() is called inside after events load
 
 
 // ==================== ALARM / NOTIFICATION ====================
@@ -813,7 +836,7 @@ function checkUpcomingEvents() {
     if (snoozed[snoozeKey] && Date.now() < snoozed[snoozeKey]) return;
 
     // Trigger at 10 min before (window: 9.5~10.5 min)
-    if (diffMin >= 9 && diffMin <= 11 && !notifiedIds.has(notifKey)) {
+    if (diffMin >= 8 && diffMin <= 12 && !notifiedIds.has(notifKey)) {
       notifiedIds.add(notifKey);
       queueAlarm(e, diffMin);
       sendBrowserNotif(e.title, `${e.time} 시작 · ${diffMin}분 후`);
@@ -837,6 +860,8 @@ function queueAlarm(event, diffMin) {
 
 function showNextAlarm() {
   if (!alarmQueue.length) return;
+  const overlay = document.getElementById('alarmOverlay');
+  if (!overlay) return; // DOM not ready yet
   const { event: e, diffMin } = alarmQueue[0];
 
   document.getElementById('alarmTitle').textContent = e.title;
@@ -897,28 +922,6 @@ function startAlarmChecker() {
 }
 
 </script>
-
-<!-- Alarm Popup -->
-<div class="alarm-overlay" id="alarmOverlay" style="display:none;">
-  <div class="alarm-popup">
-    <div class="alarm-header">
-      <span class="alarm-bell">🔔</span>
-      <div class="alarm-header-text">
-        <h3>일정 알림</h3>
-        <p id="alarmCountText">10분 후 시작</p>
-      </div>
-    </div>
-    <div class="alarm-body">
-      <div class="alarm-event-title" id="alarmTitle"></div>
-      <div class="alarm-event-meta" id="alarmMeta"></div>
-    </div>
-    <div class="alarm-footer">
-      <button class="btn btn-ghost btn-sm" onclick="snoozeAlarm()">5분 후 다시</button>
-      <button class="btn btn-primary btn-sm" onclick="dismissAlarm()">확인</button>
-    </div>
-  </div>
-</div>
-<div class="alarm-queue-badge" id="alarmBadge" onclick="showNextAlarm()"></div>
 
 </body>
 </html>
