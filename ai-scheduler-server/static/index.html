@@ -171,12 +171,18 @@
     .header-actions .btn-ghost { display: none; }
   }
 
-  /* Outlook / ICS events */
+  /* External calendar events */
   --outlook: #0078d4; --outlook-bg: #e8f4ff;
+  --gcal: #34a853;    --gcal-bg: #e6f4ea;
   .event-block.outlook { background: var(--outlook-bg) !important; border-left-color: var(--outlook) !important; color: var(--outlook) !important; }
-  .week-event.outlook { background: var(--outlook-bg) !important; color: var(--outlook) !important; border-left-color: var(--outlook) !important; }
+  .event-block.gcal    { background: var(--gcal-bg)    !important; border-left-color: var(--gcal)    !important; color: var(--gcal)    !important; }
+  .week-event.outlook  { background: var(--outlook-bg) !important; color: var(--outlook) !important; border-left-color: var(--outlook) !important; }
+  .week-event.gcal     { background: var(--gcal-bg)    !important; color: var(--gcal)    !important; border-left-color: var(--gcal)    !important; }
   .month-event.outlook { background: var(--outlook-bg) !important; color: var(--outlook) !important; }
-  .ics-badge { font-size: 9px; background: var(--outlook); color: white; border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle; }
+  .month-event.gcal    { background: var(--gcal-bg)    !important; color: var(--gcal)    !important; }
+  .src-badge { font-size: 9px; color: white; border-radius: 3px; padding: 1px 4px; margin-left: 3px; vertical-align: middle; }
+  .src-badge.ol { background: var(--outlook); }
+  .src-badge.gc { background: var(--gcal); }
 
   /* Alarm popup */
   .alarm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 500; animation: fadeIn 0.2s ease; }
@@ -255,6 +261,29 @@
         <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;" onclick="connectICS()">📧 Outlook 연결</button>
         <div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
           Outlook.com → 설정 → 캘린더 → 캘린더 공유 → ICS 링크 복사
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">📅 Google 캘린더</div>
+      <!-- 연결된 상태 -->
+      <div id="gcalConnected" style="display:none;">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          <span style="color:#34a853;font-size:10px;">●</span> 연결됨 · <span id="gcalEventCount">0</span>개 일정
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="refreshGCal()">🔄 새로고침</button>
+          <button class="btn btn-ghost btn-sm btn-danger" onclick="disconnectGCal()">해제</button>
+        </div>
+      </div>
+      <!-- 연결 전 상태 -->
+      <div id="gcalDisconnected">
+        <input type="url" class="form-input" id="gcalUrlInput"
+               placeholder="Google ICS URL 붙여넣기"
+               style="font-size:11px;margin-bottom:8px;">
+        <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;background:#34a853;" onclick="connectGCal()">📅 Google 캘린더 연결</button>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
+          Google 캘린더 → 설정 → 캘린더 설정 → "비밀 주소(iCal 형식)" 복사
         </div>
       </div>
     </div>
@@ -388,11 +417,20 @@
 const API_BASE = '';
 
 // ==================== STATE ====================
-let events = [];      // Supabase 로컬 일정
-let icsEvents = [];   // Outlook ICS 일정 (읽기 전용)
-let icsUrl = localStorage.getItem('icsUrl') || '';
+let events = [];       // Supabase 로컬 일정
+let icsEvents = [];    // Outlook ICS 일정 (읽기 전용)
+let gcalEvents = [];   // Google Calendar ICS 일정 (읽기 전용)
+let icsUrl  = localStorage.getItem('icsUrl')  || '';
+let gcalUrl = localStorage.getItem('gcalUrl') || '';
 
-function allEvents() { return [...events, ...icsEvents]; }
+function allEvents() { return [...events, ...icsEvents, ...gcalEvents]; }
+
+// 외부 캘린더 소스 정보 (배지·색상)
+function sourceInfo(e) {
+  if (e.source === 'outlook') return { cls: ' outlook', badge: '<span class="src-badge ol">OL</span>' };
+  if (e.source === 'gcal')    return { cls: ' gcal',    badge: '<span class="src-badge gc">GC</span>' };
+  return { cls: '', badge: '' };
+}
 
 let currentView = 'week';
 let currentDate = new Date();
@@ -444,9 +482,11 @@ async function loadEvents() {
     clearTimeout(wakeTimer);
     setSaveStatus('ok', `${events.length}개 일정`);
     updateOutlookUI();
+    updateGCalUI();
     renderAll();
     startAlarmChecker(); // start after events loaded
-    loadICSEvents();     // ICS는 별도 비동기로 (실패해도 로컬 일정에 영향 없음)
+    loadICSEvents();     // 외부 캘린더는 별도 비동기 (실패해도 로컬에 영향 없음)
+    loadGCalEvents();
   } catch(e) {
     clearTimeout(wakeTimer);
     if (e.message === 'timeout') {
@@ -687,8 +727,8 @@ function renderDayView(container){
   evts.filter(e=>e.time).forEach(e=>{
     const s=parseTime(e.time),en=e.endTime?parseTime(e.endTime):s+60;
     const top=(s/60)*60, height=Math.max(((en-s)/60)*60,22);
-    const oCls = e.source==='outlook'?' outlook':'';
-    html+=`<div class="event-block priority-${e.priority}${oCls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;
+    const si=sourceInfo(e);
+    html+=`<div class="event-block priority-${e.priority}${si.cls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}${si.badge}</div>`;
   });
   html+='</div></div></div>';
   container.innerHTML=html;
@@ -705,7 +745,7 @@ function renderWeekView(container){
       const d=new Date(ws);d.setDate(d.getDate()+i);const ds=fmtDate(d),ts2=fmtTime(h,0);
       const slotEvts=allEvents().filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
       html+=`<div class="week-day-cell" onclick="openAddModalWithDate('${ds}','${ts2}')">`;
-      slotEvts.forEach(e=>{const oCls=e.source==='outlook'?' outlook':'';html+=`<div class="week-event priority-${e.priority}${oCls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;});
+      slotEvts.forEach(e=>{const si=sourceInfo(e);html+=`<div class="week-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}${si.badge}</div>`;});
       html+='</div>';
     }
   }
@@ -722,7 +762,7 @@ function renderMonthView(container){
     const ds=fmtDate(new Date(y,m,d)),isT=ds===ts;
     const evts=allEvents().filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
     html+=`<div class="month-day${isT?' is-today':''}" onclick="openAddModalWithDate('${ds}')"><div class="day-num">${d}</div>`;
-    evts.slice(0,3).forEach(e=>{const oCls=e.source==='outlook'?' outlook':'';html+=`<div class="month-event priority-${e.priority}${oCls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}${e.source==='outlook'?'<span class="ics-badge">OL</span>':''}</div>`;});
+    evts.slice(0,3).forEach(e=>{const si=sourceInfo(e);html+=`<div class="month-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}${si.badge}</div>`;});
     if(evts.length>3) html+=`<div class="more-events">+${evts.length-3}개</div>`;
     html+='</div>';
   }
@@ -808,10 +848,10 @@ function showDetail(id){
   body+=`<div style="background:var(--accent-light);border:1px solid #c5d2fc;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12px;color:#374499;"><strong>🤖 AI 인사이트:</strong> ${insight}</div>`;
   document.getElementById('detailBody').innerHTML=body;
 
-  // Outlook(ICS) 이벤트는 읽기 전용
-  const isOutlook = e.source === 'outlook';
-  document.getElementById('deleteBtn').style.display = isOutlook ? 'none' : '';
-  document.getElementById('editBtn').style.display   = isOutlook ? 'none' : '';
+  // 외부 캘린더(Outlook/Google) 이벤트는 읽기 전용
+  const isExternal = !!e.source;
+  document.getElementById('deleteBtn').style.display = isExternal ? 'none' : '';
+  document.getElementById('editBtn').style.display   = isExternal ? 'none' : '';
   document.getElementById('deleteBtn').disabled = false;
   document.getElementById('editBtn').disabled   = false;
   document.getElementById('detailModal').style.display='flex';
@@ -953,6 +993,57 @@ function updateOutlookUI() {
   if (connected) document.getElementById('icsEventCount').textContent = icsEvents.length;
 }
 
+// ---------- Google Calendar ----------
+async function loadGCalEvents() {
+  if (!gcalUrl) return;
+  try {
+    const res = await fetch(`/api/fetch-ics?url=${encodeURIComponent(gcalUrl)}`);
+    if (!res.ok) throw new Error('fetch failed');
+    const text = await res.text();
+    gcalEvents = parseICS(text).map(raw => {
+      const ev = icsToAppEvent(raw);
+      if (ev) ev.source = 'gcal';
+      return ev;
+    }).filter(Boolean);
+    updateGCalUI();
+    renderAll();
+  } catch(e) {
+    console.warn('GCal load error:', e);
+    showToast('⚠️ Google 캘린더를 불러오지 못했습니다');
+  }
+}
+
+function updateGCalUI() {
+  const connected = !!gcalUrl;
+  document.getElementById('gcalConnected').style.display   = connected ? '' : 'none';
+  document.getElementById('gcalDisconnected').style.display = connected ? 'none' : '';
+  if (connected) document.getElementById('gcalEventCount').textContent = gcalEvents.length;
+}
+
+function connectGCal() {
+  const url = document.getElementById('gcalUrlInput').value.trim();
+  if (!url.startsWith('http')) return showToast('⚠️ 올바른 ICS URL을 입력해 주세요');
+  gcalUrl = url;
+  localStorage.setItem('gcalUrl', url);
+  updateGCalUI();
+  loadGCalEvents();
+  showToast('📅 Google 캘린더 연결 중...');
+}
+
+function disconnectGCal() {
+  gcalUrl = ''; gcalEvents = [];
+  localStorage.removeItem('gcalUrl');
+  updateGCalUI();
+  renderAll();
+  showToast('Google 캘린더 연결이 해제되었습니다');
+}
+
+async function refreshGCal() {
+  await loadGCalEvents();
+  showToast('✅ Google 캘린더를 새로고침했습니다');
+}
+
+// ---------- Outlook ----------
 function connectICS() {
   const url = document.getElementById('icsUrlInput').value.trim();
   if (!url.startsWith('http')) return showToast('⚠️ 올바른 ICS URL을 입력해 주세요');
