@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI 일정관리</title>
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#3b5bdb">
+
+<!-- iOS PWA -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="일정관리">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root {
     --bg: #fafafa; --surface: #ffffff; --border: #e8e8e8;
@@ -160,6 +170,25 @@
     .view-title { font-size: 15px; }
     .header-actions .btn-ghost { display: none; }
   }
+
+  /* External calendar events */
+
+  /* Alarm popup */
+  .alarm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 500; animation: fadeIn 0.2s ease; }
+  .alarm-popup { background: white; border-radius: 16px; width: 360px; max-width: 92vw; box-shadow: 0 24px 60px rgba(0,0,0,0.2); overflow: hidden; animation: slideUp 0.25s ease; }
+  .alarm-header { background: linear-gradient(135deg, #e03131, #c92a2a); color: white; padding: 18px 20px 14px; display: flex; align-items: center; gap: 10px; }
+  .alarm-bell { font-size: 28px; animation: ring 0.5s ease infinite alternate; }
+  @keyframes ring { from { transform: rotate(-15deg); } to { transform: rotate(15deg); } }
+  .alarm-header-text h3 { font-size: 15px; font-weight: 600; }
+  .alarm-header-text p { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+  .alarm-body { padding: 16px 20px; }
+  .alarm-event-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .alarm-event-meta { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--text-muted); }
+  .alarm-event-meta span { display: flex; align-items: center; gap: 6px; }
+  .alarm-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  .alarm-queue-badge { position: fixed; bottom: 24px; right: 24px; background: #e03131; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(224,49,49,0.4); z-index: 400; animation: pulse 1.5s ease infinite; display: none; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+
 </style>
 </head>
 <body>
@@ -168,6 +197,7 @@
     <h1>📅 AI 일정관리</h1>
     <div class="header-actions">
       <span class="save-status" id="saveStatus"><span class="save-dot" id="saveDot"></span> <span id="saveText">연결 중...</span></span>
+      <button class="btn btn-ghost btn-sm" id="notifBtn" onclick="enableNotifications()" style="display:none;">🔔 알림 허용</button>
       <button class="btn btn-primary" onclick="openAddModal()">+ 일정 추가</button>
     </div>
   </header>
@@ -199,6 +229,28 @@
     <div>
       <div class="section-title">📊 우선순위 현황</div>
       <div id="priorityBreakdown" style="font-size:12px;"></div>
+    </div>
+    <!-- Supabase 연결 설정 -->
+    <div>
+      <div class="section-title">🗄 Supabase 설정</div>
+      <div id="sbConnected" style="display:none;">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          <span style="color:#3ecf8e;font-size:10px;">●</span> 연결됨
+        </div>
+        <button class="btn btn-ghost btn-sm" style="width:100%;font-size:12px;" onclick="disconnectSupabase()">설정 변경</button>
+      </div>
+      <div id="sbDisconnected">
+        <input type="url" class="form-input" id="sbUrlInput"
+               placeholder="https://xxxx.supabase.co"
+               style="font-size:11px;margin-bottom:6px;">
+        <input type="text" class="form-input" id="sbKeyInput"
+               placeholder="anon key (eyJ...)"
+               style="font-size:11px;margin-bottom:8px;">
+        <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;" onclick="saveSupabaseConfig()">🗄 연결</button>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5;">
+          Supabase → Project Settings → API에서 URL과 anon key 복사
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -301,13 +353,44 @@
   </div>
 </div>
 
+
+<!-- Alarm Popup -->
+<div class="alarm-overlay" id="alarmOverlay" style="display:none;">
+  <div class="alarm-popup">
+    <div class="alarm-header">
+      <span class="alarm-bell">🔔</span>
+      <div class="alarm-header-text">
+        <h3>일정 알림</h3>
+        <p id="alarmCountText">10분 후 시작</p>
+      </div>
+    </div>
+    <div class="alarm-body">
+      <div class="alarm-event-title" id="alarmTitle"></div>
+      <div class="alarm-event-meta" id="alarmMeta"></div>
+    </div>
+    <div class="alarm-footer">
+      <button class="btn btn-ghost btn-sm" onclick="snoozeAlarm()">5분 후 다시</button>
+      <button class="btn btn-primary btn-sm" onclick="dismissAlarm()">확인</button>
+    </div>
+  </div>
+</div>
+<div class="alarm-queue-badge" id="alarmBadge" onclick="showNextAlarm()"></div>
+
 <script>
 // ==================== CONFIG ====================
 // Auto-detect API base: empty string = same origin (production), or set explicitly
 const API_BASE = '';
 
 // ==================== STATE ====================
-let events = [];
+let events = [];   // Supabase 일정
+
+// Supabase 직접 연결 — 기본값 하드코딩 (initSupabase에서 덮어쓸 수 있음)
+let _sbUrl = 'https://hgnltcwzufcvzxwqgsfy.supabase.co';
+let _sbKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhnbmx0Y3d6dWZjdnp4d3Fnc2Z5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjM4MTksImV4cCI6MjA5NTMzOTgxOX0.E-ZvXk2y19vaCxZkJmuH4bJ7diA1C7OYMQgpOIZqkOI';
+
+function allEvents() { return [...events]; }
+function sourceInfo(e) { return { cls: '', badge: '' }; }
+
 let currentView = 'week';
 let currentDate = new Date();
 let miniCalDate = new Date();
@@ -326,31 +409,174 @@ function setSaveStatus(state, text) {
   txt.textContent = text;
 }
 
-async function apiFetch(path, options = {}) {
-  const res = await fetch(API_BASE + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+// Netlify function 호출용 (ICS 프록시·Google OAuth 전용)
+async function apiFetch(path, options = {}, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(API_BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error('timeout');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Supabase REST 직접 호출 ──────────────────────────────────────────────────
+function _sbHeaders() {
+  return {
+    'apikey':        _sbKey,
+    'Authorization': `Bearer ${_sbKey}`,
+    'Content-Type':  'application/json',
+    'Prefer':        'return=representation',
+  };
+}
+
+// DB 스키마(snake_case) → 앱 형식(camelCase)
+function _toFront(e) {
+  return {
+    id:       e.id,
+    title:    e.title,
+    date:     e.date,
+    time:     e.time,
+    endTime:  e.end_time,
+    location: e.location,
+    note:     e.note,
+    priority: e.priority || 'mid',
+  };
+}
+
+// 앱 형식 → DB 스키마
+function _toDb(e) {
+  return {
+    id:       e.id,
+    title:    e.title,
+    date:     e.date,
+    time:     e.time,
+    end_time: e.endTime,
+    location: e.location,
+    note:     e.note,
+    priority: e.priority || 'mid',
+  };
+}
+
+// ── Supabase 설정 UI ──────────────────────────────────────────────────────────
+function updateSupabaseUI(connected) {
+  document.getElementById('sbConnected').style.display  = connected ? '' : 'none';
+  document.getElementById('sbDisconnected').style.display = connected ? 'none' : '';
+}
+
+function saveSupabaseConfig() {
+  const url = (document.getElementById('sbUrlInput').value || '').trim().replace(/\/$/, '');
+  const key = (document.getElementById('sbKeyInput').value || '').trim();
+  if (!url || !key) { showToast('❌ URL과 Key를 모두 입력하세요'); return; }
+  localStorage.setItem('sbUrl', url);
+  localStorage.setItem('sbKey', key);
+  _sbUrl = url;
+  _sbKey = key;
+  updateSupabaseUI(true);
+  showToast('✅ Supabase 연결 정보 저장됨');
+  loadEvents();
+}
+
+function disconnectSupabase() {
+  localStorage.removeItem('sbUrl');
+  localStorage.removeItem('sbKey');
+  _sbUrl = '';
+  _sbKey = '';
+  updateSupabaseUI(false);
+}
+
+// Supabase 연결 정보 초기화:
+// 1순위 — Netlify 환경변수 (서버에서 받아옴)
+// 2순위 — localStorage (사용자가 직접 입력한 값)
+// 3순위 — 코드에 하드코딩된 기본값 (_sbUrl/_sbKey 초기값)
+// 4순위 — 설정 UI 표시
+async function initSupabase() {
+  // Netlify function에서 서버 설정 시도
+  try {
+    const cfg = await apiFetch('/api/config', {}, 5000);
+    const sUrl = (cfg.supabaseUrl || '').replace(/\/$/, '');
+    const sKey = cfg.supabaseKey || '';
+    if (sUrl && sKey) {
+      _sbUrl = sUrl;
+      _sbKey = sKey;
+      updateSupabaseUI(true);
+      return true;
+    }
+  } catch(e) {
+    console.warn('서버 config 로드 실패 (로컬 설정 사용):', e.message);
+  }
+
+  // localStorage 폴백
+  const lsUrl = localStorage.getItem('sbUrl') || '';
+  const lsKey = localStorage.getItem('sbKey') || '';
+  if (lsUrl && lsKey) {
+    _sbUrl = lsUrl;
+    _sbKey = lsKey;
+    updateSupabaseUI(true);
+    return true;
+  }
+
+  // 하드코딩 기본값이 있으면 그대로 사용
+  if (_sbUrl && _sbKey) {
+    updateSupabaseUI(true);
+    return true;
+  }
+
+  // 설정 없음 → UI 안내
+  updateSupabaseUI(false);
+  return false;
 }
 
 async function loadEvents() {
+  setSaveStatus('saving', '연결 중...');
   try {
-    setSaveStatus('saving', '로딩 중...');
-    events = await apiFetch('/api/events');
+    const ready = await initSupabase();
+    if (!ready) {
+      setSaveStatus('error', 'Supabase 미설정');
+      showToast('⚠️ 사이드바에서 Supabase URL과 Key를 입력해주세요');
+      renderAll();
+      startAlarmChecker();
+      return;
+    }
+
+    const res = await fetch(
+      `${_sbUrl}/rest/v1/events?order=date.asc,time.asc`,
+      { headers: _sbHeaders() }
+    );
+    if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+    const rows = await res.json();
+    events = rows.map(_toFront);
+
     setSaveStatus('ok', `${events.length}개 일정`);
     renderAll();
+    startAlarmChecker();
   } catch(e) {
-    setSaveStatus('error', '서버 연결 실패');
-    showToast('❌ 서버에 연결할 수 없습니다');
+    setSaveStatus('error', '연결 실패');
+    showToast('❌ Supabase 연결 실패: ' + e.message);
   }
 }
 
 async function apiCreate(event) {
   setSaveStatus('saving', '저장 중...');
   try {
-    const saved = await apiFetch('/api/events', { method: 'POST', body: JSON.stringify(event) });
+    if (!event.id) event.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const res = await fetch(`${_sbUrl}/rest/v1/events`, {
+      method:  'POST',
+      headers: _sbHeaders(),
+      body:    JSON.stringify(_toDb(event)),
+    });
+    if (!res.ok) throw new Error(`Supabase ${res.status}`);
+    const rows = await res.json();
+    const saved = _toFront(rows[0] || event);
     events.push(saved);
     setSaveStatus('ok', `${events.length}개 일정`);
     return saved;
@@ -363,7 +589,15 @@ async function apiCreate(event) {
 async function apiUpdate(id, event) {
   setSaveStatus('saving', '수정 중...');
   try {
-    const saved = await apiFetch(`/api/events/${id}`, { method: 'PUT', body: JSON.stringify(event) });
+    event.id = id;
+    const res = await fetch(`${_sbUrl}/rest/v1/events?id=eq.${id}`, {
+      method:  'PATCH',
+      headers: _sbHeaders(),
+      body:    JSON.stringify(_toDb(event)),
+    });
+    if (!res.ok) throw new Error(`Supabase ${res.status}`);
+    const rows = await res.json();
+    const saved = _toFront(rows[0] || event);
     const idx = events.findIndex(e => e.id === id);
     if (idx >= 0) events[idx] = saved;
     setSaveStatus('ok', `${events.length}개 일정`);
@@ -377,7 +611,11 @@ async function apiUpdate(id, event) {
 async function apiDelete(id) {
   setSaveStatus('saving', '삭제 중...');
   try {
-    await apiFetch(`/api/events/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${_sbUrl}/rest/v1/events?id=eq.${id}`, {
+      method:  'DELETE',
+      headers: _sbHeaders(),
+    });
+    if (!res.ok) throw new Error(`Supabase ${res.status}`);
     events = events.filter(e => e.id !== id);
     setSaveStatus('ok', `${events.length}개 일정`);
   } catch(e) {
@@ -475,7 +713,7 @@ function parseNL() {
 }
 
 function generateSummary(dateStr) {
-  const evts = events.filter(e=>e.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const evts = allEvents().filter(e=>e.date===dateStr).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const isToday = dateStr===today();
   const label = isToday?'오늘':dateStr;
   if (!evts.length) return `${label}은 일정이 없어요. ➕ 새 일정을 추가해 보세요!`;
@@ -490,17 +728,17 @@ function generateSummary(dateStr) {
 }
 
 function generateRecommendations(dateStr) {
-  const evts = events.filter(e=>e.date===dateStr&&e.time).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const evts = allEvents().filter(e=>e.date===dateStr&&e.time).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const busy = new Set();
   evts.forEach(e=>{const s=parseTime(e.time),en=parseTime(e.endTime)||s+60; for(let m=s;m<en;m+=30)busy.add(m);});
   const free=[];
   for(let h=9;h<=18;h++){const m=h*60; if(!busy.has(m)&&!busy.has(m+30))free.push(fmtTime(h,0));}
   let html='';
-  if(events.filter(e=>e.date===dateStr&&e.priority==='high').length) html+=`<div class="reco-item">⚡ 긴급 일정이 있습니다. 미리 준비하세요.</div>`;
+  if(allEvents().filter(e=>e.date===dateStr&&e.priority==='high').length) html+=`<div class="reco-item">⚡ 긴급 일정이 있습니다. 미리 준비하세요.</div>`;
   if(free.length) html+=`<div class="reco-item">🕐 집중 작업 추천: <strong>${free.slice(0,2).join(', ')}</strong></div>`;
   if(!evts.length) html+=`<div class="reco-item">✨ 오늘은 여유롭습니다. 중요 업무에 집중하기 좋아요!</div>`;
   const tom=new Date(dateStr); tom.setDate(tom.getDate()+1);
-  if(!events.filter(e=>e.date===fmtDate(tom)).length) html+=`<div class="reco-item">📅 내일은 일정 없음. 미뤄둔 업무 배치 추천!</div>`;
+  if(!allEvents().filter(e=>e.date===fmtDate(tom)).length) html+=`<div class="reco-item">📅 내일은 일정 없음. 미뤄둔 업무 배치 추천!</div>`;
   return html||'<div class="reco-item">분석할 데이터가 없습니다.</div>';
 }
 
@@ -527,7 +765,7 @@ function renderMiniCal() {
   grid.innerHTML='';
   DAYS_KO.forEach(d=>{const el=document.createElement('div');el.className='mini-cal-dow';el.textContent=d;grid.appendChild(el);});
   const first=new Date(y,m,1), last=new Date(y,m+1,0), startDow=first.getDay();
-  const todayStr=today(), eventDates=new Set(events.map(e=>e.date));
+  const todayStr=today(), eventDates=new Set(allEvents().map(e=>e.date));
   for(let i=0;i<startDow;i++){const el=document.createElement('div');el.className='mini-cal-day other-month';el.textContent=new Date(y,m,1-startDow+i).getDate();grid.appendChild(el);}
   for(let d=1;d<=last.getDate();d++){
     const el=document.createElement('div'),ds=fmtDate(new Date(y,m,d));
@@ -567,7 +805,7 @@ function renderCalendar(){
 }
 
 function renderDayView(container){
-  const ds=fmtDate(currentDate), evts=events.filter(e=>e.date===ds);
+  const ds=fmtDate(currentDate), evts=allEvents().filter(e=>e.date===ds);
   let html='<div class="day-view"><div class="day-grid"><div class="day-time-col">';
   for(let h=0;h<24;h++) html+=`<div class="day-time-slot">${h===0?'':(h<12?h+'am':h===12?'12pm':(h-12)+'pm')}</div>`;
   html+='</div><div class="day-events-col" style="position:relative;">';
@@ -575,7 +813,8 @@ function renderDayView(container){
   evts.filter(e=>e.time).forEach(e=>{
     const s=parseTime(e.time),en=e.endTime?parseTime(e.endTime):s+60;
     const top=(s/60)*60, height=Math.max(((en-s)/60)*60,22);
-    html+=`<div class="event-block priority-${e.priority}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}</div>`;
+    const si=sourceInfo(e);
+    html+=`<div class="event-block priority-${e.priority}${si.cls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}${si.badge}</div>`;
   });
   html+='</div></div></div>';
   container.innerHTML=html;
@@ -590,9 +829,9 @@ function renderWeekView(container){
     html+=`<div class="week-time-cell">${h<12?h+'am':h===12?'12pm':(h-12)+'pm'}</div>`;
     for(let i=0;i<7;i++){
       const d=new Date(ws);d.setDate(d.getDate()+i);const ds=fmtDate(d),ts2=fmtTime(h,0);
-      const slotEvts=events.filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
+      const slotEvts=allEvents().filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
       html+=`<div class="week-day-cell" onclick="openAddModalWithDate('${ds}','${ts2}')">`;
-      slotEvts.forEach(e=>{html+=`<div class="week-event priority-${e.priority}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}</div>`;});
+      slotEvts.forEach(e=>{const si=sourceInfo(e);html+=`<div class="week-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}${si.badge}</div>`;});
       html+='</div>';
     }
   }
@@ -607,9 +846,9 @@ function renderMonthView(container){
   for(let i=0;i<startDow;i++){const d=new Date(y,m,1-startDow+i);html+=`<div class="month-day other-month"><div class="day-num">${d.getDate()}</div></div>`;}
   for(let d=1;d<=last.getDate();d++){
     const ds=fmtDate(new Date(y,m,d)),isT=ds===ts;
-    const evts=events.filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
+    const evts=allEvents().filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
     html+=`<div class="month-day${isT?' is-today':''}" onclick="openAddModalWithDate('${ds}')"><div class="day-num">${d}</div>`;
-    evts.slice(0,3).forEach(e=>{html+=`<div class="month-event priority-${e.priority}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}</div>`;});
+    evts.slice(0,3).forEach(e=>{const si=sourceInfo(e);html+=`<div class="month-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}${si.badge}</div>`;});
     if(evts.length>3) html+=`<div class="more-events">+${evts.length-3}개</div>`;
     html+='</div>';
   }
@@ -667,8 +906,11 @@ async function saveEvent(){
       note: document.getElementById('eventNote').value.trim()||null,
       priority: selectedPriority
     };
-    if(editingEventId){ await apiUpdate(editingEventId,evt); }
-    else { await apiCreate(evt); }
+    if (editingEventId) {
+      await apiUpdate(editingEventId, evt);
+    } else {
+      await apiCreate(evt);
+    }
     closeModal('addModal');
     renderAll();
     showToast(editingEventId?'✅ 일정이 수정되었습니다':'✅ 일정이 추가되었습니다');
@@ -677,7 +919,7 @@ async function saveEvent(){
 }
 
 function showDetail(id){
-  const e=events.find(ev=>ev.id===id);
+  const e=allEvents().find(ev=>ev.id===id);
   if(!e)return;
   currentEventId=id;
   const tagBg={high:'var(--high-bg)',mid:'var(--mid-bg)',low:'var(--low-bg)'};
@@ -695,9 +937,8 @@ function showDetail(id){
   body+=`<div style="background:var(--accent-light);border:1px solid #c5d2fc;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12px;color:#374499;"><strong>🤖 AI 인사이트:</strong> ${insight}</div>`;
   document.getElementById('detailBody').innerHTML=body;
 
-  // Enable buttons explicitly
-  document.getElementById('deleteBtn').disabled=false;
-  document.getElementById('editBtn').disabled=false;
+  document.getElementById('deleteBtn').disabled = false;
+  document.getElementById('editBtn').disabled   = false;
   document.getElementById('detailModal').style.display='flex';
 }
 
@@ -728,7 +969,7 @@ async function deleteCurrentEvent(){
 }
 
 async function editCurrentEvent(){
-  const e=events.find(ev=>ev.id===currentEventId);
+  const e=allEvents().find(ev=>ev.id===currentEventId);
   if(!e) return;
   closeModal('detailModal');
   editingEventId=e.id;
@@ -756,7 +997,184 @@ function renderAll(){
 }
 
 // ==================== INIT ====================
-loadEvents();
+let swRegistration = null;
+
+// Service Worker 등록
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    swRegistration = reg;
+    console.log('SW registered');
+  }).catch(err => console.warn('SW registration failed:', err));
+
+  // SW로부터 SNOOZE/DISMISS 메시지 수신 (알림 클릭 시)
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event.data.type === 'SNOOZE_ALARM') snoozeAlarm();
+    else if (event.data.type === 'DISMISS_ALARM') dismissAlarm();
+  });
+}
+
+loadEvents(); // startAlarmChecker() is called inside after events load
+
+
+// ==================== ALARM / NOTIFICATION ====================
+let alarmQueue = [];       // pending alarms to show
+let notifiedIds = new Set(); // event IDs already notified (session)
+let snoozed = {};          // eventId -> snooze-until timestamp
+let alarmCheckInterval = null;
+
+function updateNotifBtn() {
+  const btn = document.getElementById('notifBtn');
+  if (!btn || !('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    btn.style.display = 'none';
+  } else {
+    btn.style.display = '';
+    btn.textContent = Notification.permission === 'denied' ? '🔕 알림 차단됨' : '🔔 알림 허용';
+    btn.disabled = Notification.permission === 'denied';
+  }
+}
+
+async function enableNotifications() {
+  if (!('Notification' in window)) return showToast('이 브라우저는 알림을 지원하지 않습니다');
+  const perm = await Notification.requestPermission();
+  updateNotifBtn();
+  if (perm === 'granted') showToast('✅ 알림이 허용되었습니다');
+  else showToast('❌ 알림이 차단되었습니다. 설정에서 허용해 주세요');
+}
+
+function requestNotifPermission() {
+  // iOS는 사용자 제스처 없이 권한 요청 불가 → 버튼으로만 요청
+  updateNotifBtn();
+}
+
+async function sendBrowserNotif(title, body, tag) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts = {
+    body,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: tag || title,
+    renotify: true,
+    actions: [
+      { action: 'snooze', title: '5분 후 다시' },
+      { action: 'dismiss', title: '확인' }
+    ]
+  };
+  // Service Worker 방식 (iOS PWA 포함 가장 안정적)
+  if (swRegistration) {
+    try {
+      await swRegistration.showNotification('📅 ' + title, opts);
+      return;
+    } catch(e) { /* fallback */ }
+  }
+  // 폴백: 일반 Notification
+  new Notification('📅 ' + title, { body, icon: '/icon-192.png' });
+}
+
+function checkUpcomingEvents() {
+  const now = new Date();
+  const todayStr = fmtDate(now);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  allEvents().forEach(e => {
+    if (!e.time) return;
+    if (e.date !== todayStr) return;
+
+    const eventMin = parseTime(e.time);
+    const diffMin = eventMin - nowMin;
+    const notifKey = e.id + '_10';
+    const snoozeKey = e.id;
+
+    // Check snooze
+    if (snoozed[snoozeKey] && Date.now() < snoozed[snoozeKey]) return;
+
+    // Trigger at 10 min before (window: 9.5~10.5 min)
+    if (diffMin >= 8 && diffMin <= 12 && !notifiedIds.has(notifKey)) {
+      notifiedIds.add(notifKey);
+      queueAlarm(e, diffMin);
+      sendBrowserNotif(e.title, `${e.time} 시작 · ${diffMin}분 후`, notifKey);
+    }
+
+    // Also trigger at exact time
+    const notifKeyNow = e.id + '_0';
+    if (diffMin >= -1 && diffMin <= 1 && !notifiedIds.has(notifKeyNow)) {
+      notifiedIds.add(notifKeyNow);
+      queueAlarm(e, 0);
+      sendBrowserNotif(e.title, '지금 시작!', notifKeyNow);
+    }
+  });
+}
+
+function queueAlarm(event, diffMin) {
+  alarmQueue.push({ event, diffMin });
+  updateAlarmBadge();
+  if (alarmQueue.length === 1) showNextAlarm();
+}
+
+function showNextAlarm() {
+  if (!alarmQueue.length) return;
+  const overlay = document.getElementById('alarmOverlay');
+  if (!overlay) return; // DOM not ready yet
+  const { event: e, diffMin } = alarmQueue[0];
+
+  document.getElementById('alarmTitle').textContent = e.title;
+  document.getElementById('alarmCountText').textContent =
+    diffMin <= 1 ? '지금 시작!' : `${diffMin}분 후 시작`;
+
+  const d = new Date(e.date + 'T00:00:00');
+  const DAYS = ['일','월','화','수','목','금','토'];
+  let meta = `<span>🕐 ${e.time}${e.endTime ? ' – ' + e.endTime : ''}</span>`;
+  meta += `<span>📅 ${d.getMonth()+1}월 ${d.getDate()}일 (${DAYS[d.getDay()]})</span>`;
+  if (e.location) meta += `<span>📍 ${e.location}</span>`;
+  document.getElementById('alarmMeta').innerHTML = meta;
+
+  // Priority color
+  const colors = { high: '#e03131', mid: '#f59f00', low: '#2f9e44' };
+  document.querySelector('.alarm-header').style.background =
+    `linear-gradient(135deg, ${colors[e.priority] || colors.mid}, ${colors[e.priority] || colors.mid}cc)`;
+
+  document.getElementById('alarmOverlay').style.display = 'flex';
+  updateAlarmBadge();
+}
+
+function dismissAlarm() {
+  alarmQueue.shift();
+  document.getElementById('alarmOverlay').style.display = 'none';
+  updateAlarmBadge();
+  if (alarmQueue.length > 0) {
+    setTimeout(showNextAlarm, 400);
+  }
+}
+
+function snoozeAlarm() {
+  if (!alarmQueue.length) return;
+  const { event: e } = alarmQueue[0];
+  snoozed[e.id] = Date.now() + 5 * 60 * 1000; // snooze 5 min
+  // Remove from notified so it can re-trigger after snooze
+  notifiedIds.delete(e.id + '_10');
+  notifiedIds.delete(e.id + '_0');
+  dismissAlarm();
+  showToast('⏰ 5분 후에 다시 알려드릴게요');
+}
+
+function updateAlarmBadge() {
+  const badge = document.getElementById('alarmBadge');
+  const remaining = alarmQueue.length;
+  if (remaining > 1) {
+    badge.style.display = 'flex';
+    badge.textContent = remaining;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function startAlarmChecker() {
+  requestNotifPermission();
+  checkUpcomingEvents(); // run immediately
+  alarmCheckInterval = setInterval(checkUpcomingEvents, 60 * 1000); // every minute
+}
+
 </script>
+
 </body>
 </html>

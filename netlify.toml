@@ -1,0 +1,18 @@
+[build]
+  publish = "static"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# /api/* → serverless function으로 라우팅
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# SPA fallback (새로고침 시 index.html 반환)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
