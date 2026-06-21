@@ -7,3 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: ICLOUD_EMAIL
+        sync: false
+      - key: ICLOUD_APP_PASSWORD
+        sync: false
+      - key: ICLOUD_CALENDAR_NAME
+        sync: false

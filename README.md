@@ -90,3 +90,19 @@ export SUPABASE_KEY=eyJhbGci...
 pip install -r requirements.txt
 python app.py
 ```
+
+---
+
+## iCloud Calendar 선택 연동
+
+iPhone의 iCloud 캘린더 일정도 선택적으로 읽고 쓸 수 있습니다. 아래 환경변수를
+설정한 경우에만 웹앱에서 iCloud 연동 UI가 활성화됩니다.
+
+```bash
+export ICLOUD_EMAIL=your-apple-account@example.com
+export ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+export ICLOUD_CALENDAR_NAME=Calendar
+```
+
+Apple 계정의 기본 암호가 아니라 앱 전용 암호를 사용해야 합니다. 전체 설정
+방법은 [ICLOUD_SETUP.md](ICLOUD_SETUP.md)를 참고하세요.
