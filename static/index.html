@@ -536,7 +536,7 @@ function _toFront(e) {
     endTime:  e.end_time,
     location: e.location,
     note:     e.note,
-    priority: e.priority || 'mid',
+    priority: ['high', 'mid', 'low'].includes(e.priority) ? e.priority : 'mid',
   };
 }
 
@@ -719,6 +719,25 @@ function fmtDate(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padSta
 function fmtTime(h, m) { return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`; }
 function parseTime(str) { if (!str) return null; const [h,m] = str.split(':').map(Number); return h*60+m; }
 function today() { return fmtDate(new Date()); }
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function escapeInlineJs(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, '\\x27')
+    .replace(/"/g, '\\x22')
+    .replace(/&/g, '\\x26')
+    .replace(/</g, '\\x3c')
+    .replace(/>/g, '\\x3e')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
 function showToast(msg, duration=2500) {
   const t = document.createElement('div');
   t.className = 'toast';
@@ -795,7 +814,7 @@ function parseNL() {
     selectPriority(p);
     const pLabel = {high:'높음',mid:'중간',low:'낮음'};
     resDiv.style.display='block';
-    resDiv.innerHTML=`✅ <strong>${result.title}</strong> · ${result.date||''} ${result.time||''} · ${pLabel[p]}`;
+    resDiv.innerHTML=`✅ <strong>${escapeHtml(result.title)}</strong> · ${escapeHtml(result.date||'')} ${escapeHtml(result.time||'')} · ${pLabel[p]}`;
   } else {
     resDiv.style.display='block'; resDiv.textContent='❌ 파싱 실패. 직접 입력해주세요.';
   }
@@ -808,7 +827,7 @@ function generateSummary(dateStr) {
   if (!evts.length) return `${label}은 일정이 없어요. ➕ 새 일정을 추가해 보세요!`;
   const hi=evts.filter(e=>e.priority==='high'), mi=evts.filter(e=>e.priority==='mid'), lo=evts.filter(e=>e.priority==='low');
   let s=`${label} 총 <strong>${evts.length}개</strong> 일정<br>`;
-  if(hi.length) s+=`🔴 긴급 ${hi.length}개: ${hi.map(e=>e.title).join(', ')}<br>`;
+  if(hi.length) s+=`🔴 긴급 ${hi.length}개: ${hi.map(e=>escapeHtml(e.title)).join(', ')}<br>`;
   if(mi.length) s+=`🟡 중간 ${mi.length}개<br>`;
   if(lo.length) s+=`🟢 여유 ${lo.length}개`;
   const wt=evts.filter(e=>e.time);
@@ -903,7 +922,7 @@ function renderDayView(container){
     const s=parseTime(e.time),en=e.endTime?parseTime(e.endTime):s+60;
     const top=(s/60)*60, height=Math.max(((en-s)/60)*60,22);
     const si=sourceInfo(e);
-    html+=`<div class="event-block priority-${e.priority}${si.cls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${e.id}');event.stopPropagation();">${e.time} ${e.title}${si.badge}</div>`;
+    html+=`<div class="event-block priority-${e.priority}${si.cls}" style="top:${top}px;height:${height}px;" onclick="showDetail('${escapeInlineJs(e.id)}');event.stopPropagation();">${escapeHtml(e.time)} ${escapeHtml(e.title)}${si.badge}</div>`;
   });
   html+='</div></div></div>';
   container.innerHTML=html;
@@ -920,7 +939,7 @@ function renderWeekView(container){
       const d=new Date(ws);d.setDate(d.getDate()+i);const ds=fmtDate(d),ts2=fmtTime(h,0);
       const slotEvts=allEvents().filter(e=>e.date===ds&&e.time&&parseTime(e.time)>=h*60&&parseTime(e.time)<(h+1)*60);
       html+=`<div class="week-day-cell" onclick="openAddModalWithDate('${ds}','${ts2}')">`;
-      slotEvts.forEach(e=>{const si=sourceInfo(e);html+=`<div class="week-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.title}${si.badge}</div>`;});
+      slotEvts.forEach(e=>{const si=sourceInfo(e);html+=`<div class="week-event priority-${e.priority}${si.cls}" onclick="showDetail('${escapeInlineJs(e.id)}');event.stopPropagation();" title="${escapeHtml(e.title)}">${escapeHtml(e.title)}${si.badge}</div>`;});
       html+='</div>';
     }
   }
@@ -937,7 +956,7 @@ function renderMonthView(container){
     const ds=fmtDate(new Date(y,m,d)),isT=ds===ts;
     const evts=allEvents().filter(e=>e.date===ds).sort((a,b)=>({high:0,mid:1,low:2}[a.priority]-{high:0,mid:1,low:2}[b.priority]));
     html+=`<div class="month-day${isT?' is-today':''}" onclick="openAddModalWithDate('${ds}')"><div class="day-num">${d}</div>`;
-    evts.slice(0,3).forEach(e=>{const si=sourceInfo(e);html+=`<div class="month-event priority-${e.priority}${si.cls}" onclick="showDetail('${e.id}');event.stopPropagation();" title="${e.title}">${e.time?e.time+' ':''}${e.title}${si.badge}</div>`;});
+    evts.slice(0,3).forEach(e=>{const si=sourceInfo(e);html+=`<div class="month-event priority-${e.priority}${si.cls}" onclick="showDetail('${escapeInlineJs(e.id)}');event.stopPropagation();" title="${escapeHtml(e.title)}">${e.time?escapeHtml(e.time)+' ':''}${escapeHtml(e.title)}${si.badge}</div>`;});
     if(evts.length>3) html+=`<div class="more-events">+${evts.length-3}개</div>`;
     html+='</div>';
   }
@@ -1065,9 +1084,9 @@ function showDetail(id){
   document.getElementById('detailTitle').textContent=e.title;
   const d=new Date(e.date+'T00:00:00');
   let body=`<div class="detail-row"><span class="detail-icon">📅</span><div><div class="detail-label">날짜</div>${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${DAYS_KO[d.getDay()]})</div></div>`;
-  if(e.time) body+=`<div class="detail-row"><span class="detail-icon">🕐</span><div><div class="detail-label">시간</div>${e.time}${e.endTime?' – '+e.endTime:''}</div></div>`;
-  if(e.location) body+=`<div class="detail-row"><span class="detail-icon">📍</span><div><div class="detail-label">장소</div>${e.location}</div></div>`;
-  if(e.note) body+=`<div class="detail-row"><span class="detail-icon">📝</span><div><div class="detail-label">메모</div>${e.note}</div></div>`;
+  if(e.time) body+=`<div class="detail-row"><span class="detail-icon">🕐</span><div><div class="detail-label">시간</div>${escapeHtml(e.time)}${e.endTime?' – '+escapeHtml(e.endTime):''}</div></div>`;
+  if(e.location) body+=`<div class="detail-row"><span class="detail-icon">📍</span><div><div class="detail-label">장소</div>${escapeHtml(e.location)}</div></div>`;
+  if(e.note) body+=`<div class="detail-row"><span class="detail-icon">📝</span><div><div class="detail-label">메모</div>${escapeHtml(e.note)}</div></div>`;
   const insight=getEventInsight(e);
   body+=`<div style="background:var(--accent-light);border:1px solid #c5d2fc;border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12px;color:#374499;"><strong>🤖 AI 인사이트:</strong> ${insight}</div>`;
   document.getElementById('detailBody').innerHTML=body;
@@ -1431,9 +1450,9 @@ function showNextAlarm() {
 
   const d = new Date(e.date + 'T00:00:00');
   const DAYS = ['일','월','화','수','목','금','토'];
-  let meta = `<span>🕐 ${e.time}${e.endTime ? ' – ' + e.endTime : ''}</span>`;
+  let meta = `<span>🕐 ${escapeHtml(e.time)}${e.endTime ? ' – ' + escapeHtml(e.endTime) : ''}</span>`;
   meta += `<span>📅 ${d.getMonth()+1}월 ${d.getDate()}일 (${DAYS[d.getDay()]})</span>`;
-  if (e.location) meta += `<span>📍 ${e.location}</span>`;
+  if (e.location) meta += `<span>📍 ${escapeHtml(e.location)}</span>`;
   document.getElementById('alarmMeta').innerHTML = meta;
 
   // Priority color
