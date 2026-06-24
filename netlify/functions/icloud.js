@@ -2,7 +2,7 @@ const { randomUUID, timingSafeEqual } = require('node:crypto');
 
 const TIMEZONE = 'Asia/Seoul';
 //const DEFAULT_CALDAV_URL = 'https://caldav.icloud.com/';
-const DEFAULT_CALDAV_URL = 'webcal://p126-caldav.icloud.com/published/2/MjI3MTY4NDM3MDIyMjcxNn5FjRWGRQf56j0HwJ1L8EKJ3vRNR5Ue4T3t4xOq_VsT2XvwznSKFf9BmMQLlC0ps0PpYDgTXG6P1IbsXJuH2yI';
+const DEFAULT_CALDAV_URL = 'https://p126-caldav.icloud.com/';
 const ALLOWED_ORIGINS = new Set([
   'https://hbyim.github.io',
   'https://yimschedulers.netlify.app',
