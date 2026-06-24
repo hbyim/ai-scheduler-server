@@ -36,7 +36,9 @@
   <script>
     (async () => {
       try {
-        const response = await fetch('./static/index.html', { cache: 'no-cache' });
+        const response = await fetch('./static/index.html?v=icloud-direct-v1', {
+          cache: 'no-store',
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         let html = await response.text();
@@ -57,7 +59,11 @@
         // Netlify의 보호된 CalDAV 프록시로 전달한다.
         html = html.replace(
           "const ICLOUD_API_BASE = window.__ICLOUD_API_BASE__ || API_BASE;",
-          "const ICLOUD_API_BASE = 'https://yimschedulers.netlify.app';"
+          "const ICLOUD_API_BASE = 'https://yimschedulers.netlify.app/.netlify/functions/icloud';"
+        );
+        html = html.replace(
+          "return fetch(ICLOUD_API_BASE + path, { ...options, headers });",
+          "const target = ICLOUD_API_BASE ? ICLOUD_API_BASE + path.replace(/^\\/api\\/icloud/, '') : API_BASE + path; return fetch(target, { ...options, headers });"
         );
 
         // Google OAuth 백엔드는 아직 구성되지 않았으므로 Google UI만 숨긴다.
