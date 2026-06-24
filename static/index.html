@@ -479,6 +479,17 @@ async function readICloudJson(response) {
   return response.json();
 }
 
+async function throwICloudRequestError(response, fallbackMessage) {
+  let message = '';
+  try {
+    const data = await readICloudJson(response);
+    message = data?.error || '';
+  } catch {
+    // JSON이 아닌 프록시 오류도 상태 코드와 함께 표시한다.
+  }
+  throw new Error(message || `${fallbackMessage} (${response.status})`);
+}
+
 // Supabase 직접 연결 — 기본값 하드코딩 (initSupabase에서 덮어쓸 수 있음)
 let _sbUrl = 'https://hgnltcwzufcvzxwqgsfy.supabase.co';
 let _sbKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhnbmx0Y3d6dWZjdnp4d3Fnc2Z5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjM4MTksImV4cCI6MjA5NTMzOTgxOX0.E-ZvXk2y19vaCxZkJmuH4bJ7diA1C7OYMQgpOIZqkOI';
@@ -1050,10 +1061,16 @@ async function saveEvent(){
       const icloudEv = icloudEvents.find(e => e.id === editingEventId);
       if (!icloudEv?.icloudId) throw new Error('icloudId missing');
       const res = await icloudFetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(evt)
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          ...evt,
+          icloudResource: icloudEv.icloudResource,
+          icloudEtag: icloudEv.icloudEtag,
+        })
       });
-      if (!res.ok) throw new Error(`icloud update ${res.status}`);
-      const updated = await res.json();
+      if (!res.ok) await throwICloudRequestError(res, 'iCloud 일정 수정 실패');
+      const updated = await readICloudJson(res);
       const idx = icloudEvents.findIndex(e => e.id === editingEventId);
       if (idx >= 0) icloudEvents[idx] = updated;
       document.getElementById('icloudEventCount').textContent = icloudEvents.length;
@@ -1080,7 +1097,7 @@ async function saveEvent(){
     closeModal('addModal');
     renderAll();
     showToast(editingEventId?'✅ 일정이 수정되었습니다':'✅ 일정이 추가되었습니다');
-  } catch(e){ showToast('❌ 저장에 실패했습니다'); }
+  } catch(e){ showToast(`❌ 저장에 실패했습니다: ${e.message}`); }
   finally { saveBtn.disabled=false; saveBtn.textContent='저장'; }
 }
 
@@ -1137,8 +1154,14 @@ async function deleteCurrentEvent(){
     } else if (currentEventId.startsWith('icloud_')) {
       const icloudEv = icloudEvents.find(e => e.id === currentEventId);
       if (!icloudEv?.icloudId) throw new Error('icloudId missing');
-      const res = await icloudFetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`icloud delete ${res.status}`);
+      const res = await icloudFetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({
+          icloudResource: icloudEv.icloudResource,
+          icloudEtag: icloudEv.icloudEtag,
+        }),
+      });
+      if (!res.ok) await throwICloudRequestError(res, 'iCloud 일정 삭제 실패');
       icloudEvents = icloudEvents.filter(e => e.id !== currentEventId);
       document.getElementById('icloudEventCount').textContent = icloudEvents.length;
     } else {
@@ -1147,7 +1170,7 @@ async function deleteCurrentEvent(){
     closeModal('detailModal');
     renderAll();
     showToast('🗑 일정이 삭제되었습니다');
-  } catch(e){ showToast('❌ 삭제에 실패했습니다'); btn.disabled=false; btn.textContent='🗑 삭제'; }
+  } catch(e){ showToast(`❌ 삭제에 실패했습니다: ${e.message}`); btn.disabled=false; btn.textContent='🗑 삭제'; }
 }
 
 async function editCurrentEvent(){

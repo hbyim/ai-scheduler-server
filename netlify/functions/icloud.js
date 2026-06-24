@@ -314,15 +314,13 @@ function addDays(dateString, days) {
   return date.toISOString().slice(0, 10);
 }
 
-function buildIcs(data, uid) {
+function buildEditableEventLines(data, uid, sequence = 0) {
+  const now = compactUtc(new Date());
   const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//AI Scheduler//iCloud Calendar//KO',
-    'CALSCALE:GREGORIAN',
-    'BEGIN:VEVENT',
     `UID:${escapeIcs(uid)}`,
-    `DTSTAMP:${compactUtc(new Date())}`,
+    `DTSTAMP:${now}`,
+    `LAST-MODIFIED:${now}`,
+    `SEQUENCE:${sequence}`,
     `SUMMARY:${escapeIcs(data.title || '')}`,
   ];
 
@@ -341,18 +339,138 @@ function buildIcs(data, uid) {
     lines.push(`DTEND;VALUE=DATE:${compactLocal(addDays(data.date, 1))}`);
   }
 
-  lines.push('END:VEVENT', 'END:VCALENDAR', '');
+  return lines;
+}
+
+function buildIcs(data, uid) {
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//AI Scheduler//iCloud Calendar//KO',
+    'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    ...buildEditableEventLines(data, uid),
+    'END:VEVENT',
+    'END:VCALENDAR',
+    '',
+  ];
   return lines.join('\r\n');
+}
+
+function updateEventIcs(ics, data, uid) {
+  const editableNames = new Set([
+    'DTSTAMP',
+    'SUMMARY',
+    'LOCATION',
+    'DESCRIPTION',
+    'DTSTART',
+    'DTEND',
+    'LAST-MODIFIED',
+    'SEQUENCE',
+  ]);
+  let updated = false;
+  const unfolded = unfoldIcs(ics);
+  const calendarData = unfolded.replace(
+    /BEGIN:VEVENT\r?\n([\s\S]*?)END:VEVENT/gi,
+    (full, block) => {
+      const blockUid = unescapeIcs(readIcsProperty(block, 'UID')?.value || '');
+      if (
+        updated
+        || blockUid !== uid
+        || readIcsProperty(block, 'RECURRENCE-ID')
+      ) {
+        return full;
+      }
+
+      const sequence = Number(readIcsProperty(block, 'SEQUENCE')?.value || 0);
+      const preserved = block
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .filter(line => {
+          const propertyName = /^([A-Z-]+)(?:;|:)/i.exec(line)?.[1]?.toUpperCase();
+          return propertyName && propertyName !== 'UID' && !editableNames.has(propertyName);
+        });
+      updated = true;
+      return [
+        'BEGIN:VEVENT',
+        `UID:${escapeIcs(uid)}`,
+        ...preserved,
+        ...buildEditableEventLines(
+          data,
+          uid,
+          Number.isFinite(sequence) ? sequence + 1 : 1,
+        ).filter(line => !line.startsWith('UID:')),
+        'END:VEVENT',
+      ].join('\r\n');
+    },
+  );
+
+  if (!updated) throw new Error('iCloud 일정 원본에서 수정할 이벤트를 찾을 수 없습니다.');
+  return calendarData.endsWith('\r\n') ? calendarData : `${calendarData}\r\n`;
 }
 
 function eventResponseBlocks(xml) {
   return responseBlocks(xml)
     .map(block => ({
       href: extractTag(block, 'href'),
-      etag: decodeXml(extractTag(block, 'getetag')).replace(/^"|"$/g, ''),
+      etag: decodeXml(extractTag(block, 'getetag')).trim(),
       calendarData: extractTag(block, 'calendar-data'),
     }))
     .filter(item => item.href && item.calendarData);
+}
+
+function encodeResourceRef(url) {
+  return Buffer.from(url, 'utf8').toString('base64url');
+}
+
+function resourceFromRef(calendar, ref, etag = '') {
+  if (!/^[A-Za-z0-9_-]+$/.test(String(ref || ''))) {
+    throw new Error('iCloud 일정 리소스 정보가 올바르지 않습니다.');
+  }
+
+  let decodedUrl = '';
+  try {
+    decodedUrl = Buffer.from(String(ref || ''), 'base64url').toString('utf8');
+  } catch {
+    throw new Error('iCloud 일정 리소스 정보가 올바르지 않습니다.');
+  }
+
+  const calendarUrl = new URL(
+    calendar.url.endsWith('/') ? calendar.url : `${calendar.url}/`,
+  );
+  const resourceUrl = new URL(decodedUrl, calendarUrl);
+  if (
+    resourceUrl.protocol !== 'https:'
+    || resourceUrl.origin !== calendarUrl.origin
+    || !resourceUrl.pathname.startsWith(calendarUrl.pathname)
+    || resourceUrl.pathname === calendarUrl.pathname
+  ) {
+    throw new Error('iCloud 일정 리소스가 선택한 캘린더에 속하지 않습니다.');
+  }
+
+  return {
+    url: resourceUrl.toString(),
+    etag: String(etag || '').trim(),
+  };
+}
+
+function ifMatchHeaders(etag) {
+  const value = String(etag || '').trim();
+  if (!value) return {};
+  return {
+    'If-Match': /^(?:W\/)?"/.test(value)
+      ? value
+      : `"${value.replace(/^"|"$/g, '')}"`,
+  };
+}
+
+function eventsFromResource(item, baseUrl) {
+  const resourceUrl = resolveDavUrl(item.href, baseUrl);
+  return parseEvents(item.calendarData).map(event => ({
+    ...event,
+    icloudResource: encodeResourceRef(resourceUrl),
+    icloudEtag: item.etag,
+  }));
 }
 
 async function listEvents(calendar) {
@@ -376,7 +494,8 @@ async function listEvents(calendar) {
     Depth: '1',
     'Content-Type': 'application/xml; charset=utf-8',
   });
-  return eventResponseBlocks(result.text).flatMap(item => parseEvents(item.calendarData));
+  return eventResponseBlocks(result.text)
+    .flatMap(item => eventsFromResource(item, result.url));
 }
 
 async function findEventResource(calendar, uid) {
@@ -402,6 +521,25 @@ async function findEventResource(calendar, uid) {
   return {
     url: resolveDavUrl(item.href, result.url),
     etag: item.etag,
+  };
+}
+
+async function resolveEventResource(calendar, uid, data = {}) {
+  if (data.icloudResource) {
+    return resourceFromRef(calendar, data.icloudResource, data.icloudEtag);
+  }
+  return findEventResource(calendar, uid);
+}
+
+async function loadCurrentEventResource(resource, uid) {
+  const current = await davRequest(resource.url, 'GET');
+  if (!parseEvents(current.text).some(event => event.icloudId === uid)) {
+    throw new Error('iCloud 일정 리소스와 이벤트 ID가 일치하지 않습니다.');
+  }
+  return {
+    ...resource,
+    etag: current.response.headers.get('etag') || resource.etag || '',
+    calendarData: current.text,
   };
 }
 
@@ -453,7 +591,7 @@ exports.handler = async function handler(event) {
       const uid = randomUUID();
       const calendarBase = calendar.url.endsWith('/') ? calendar.url : `${calendar.url}/`;
       const resourceUrl = new URL(`${encodeURIComponent(uid)}.ics`, calendarBase).toString();
-      await davRequest(resourceUrl, 'PUT', buildIcs(data, uid), {
+      const created = await davRequest(resourceUrl, 'PUT', buildIcs(data, uid), {
         'Content-Type': 'text/calendar; charset=utf-8',
         'If-None-Match': '*',
       });
@@ -461,6 +599,8 @@ exports.handler = async function handler(event) {
         ...data,
         id: `icloud_${uid}`,
         icloudId: uid,
+        icloudResource: encodeResourceRef(resourceUrl),
+        icloudEtag: created.response.headers.get('etag') || '',
         source: 'icloud',
       }, origin);
     }
@@ -469,15 +609,24 @@ exports.handler = async function handler(event) {
     if (eventMatch && method === 'PUT') {
       const uid = decodeURIComponent(eventMatch[1]);
       const calendar = await discoverCalendar();
-      const resource = await findEventResource(calendar, uid);
-      await davRequest(resource.url, 'PUT', buildIcs(data, uid), {
+      const resource = await loadCurrentEventResource(
+        await resolveEventResource(calendar, uid, data),
+        uid,
+      );
+      const updated = await davRequest(resource.url, 'PUT', updateEventIcs(
+        resource.calendarData,
+        data,
+        uid,
+      ), {
         'Content-Type': 'text/calendar; charset=utf-8',
-        ...(resource.etag ? { 'If-Match': `"${resource.etag}"` } : {}),
+        ...ifMatchHeaders(resource.etag),
       });
       return jsonResponse(200, {
         ...data,
         id: `icloud_${uid}`,
         icloudId: uid,
+        icloudResource: encodeResourceRef(resource.url),
+        icloudEtag: updated.response.headers.get('etag') || resource.etag || '',
         source: 'icloud',
       }, origin);
     }
@@ -485,9 +634,12 @@ exports.handler = async function handler(event) {
     if (eventMatch && method === 'DELETE') {
       const uid = decodeURIComponent(eventMatch[1]);
       const calendar = await discoverCalendar();
-      const resource = await findEventResource(calendar, uid);
+      const resource = await loadCurrentEventResource(
+        await resolveEventResource(calendar, uid, data),
+        uid,
+      );
       await davRequest(resource.url, 'DELETE', '', {
-        ...(resource.etag ? { 'If-Match': `"${resource.etag}"` } : {}),
+        ...ifMatchHeaders(resource.etag),
       });
       return jsonResponse(200, { ok: true }, origin);
     }
