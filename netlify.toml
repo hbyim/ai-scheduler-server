@@ -5,6 +5,13 @@
 [functions]
   node_bundler = "esbuild"
 
+# GitHub Pages에서 사용하는 iCloud CalDAV 프록시
+[[redirects]]
+  from = "/api/icloud/*"
+  to = "/.netlify/functions/icloud/:splat"
+  status = 200
+  force = true
+
 # /api/* → serverless function으로 라우팅
 [[redirects]]
   from = "/api/*"
