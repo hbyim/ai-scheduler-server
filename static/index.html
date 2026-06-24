@@ -275,8 +275,14 @@
         <button class="btn btn-ghost btn-sm" style="width:100%;" onclick="refreshICloud()">🔄 새로고침</button>
       </div>
       <div id="icloudDisconnected">
+        <input type="password" class="form-input" id="icloudTokenInput"
+               placeholder="iCloud 연동 토큰"
+               autocomplete="off"
+               style="font-size:11px;margin-bottom:7px;">
+        <button class="btn btn-primary btn-sm" style="width:100%;font-size:12px;margin-bottom:7px;"
+                onclick="saveICloudToken()"> iCloud 연결</button>
         <div id="icloudStatusText" style="font-size:11px;color:var(--text-muted);line-height:1.5;">
-          서버 환경변수를 설정하면 선택적으로 연동됩니다.
+          Netlify에 설정한 연동 토큰을 입력하세요.
         </div>
       </div>
     </div>
@@ -439,7 +445,7 @@
 <script>
 // ==================== CONFIG ====================
 // Auto-detect API base: empty string = same origin (production), or set explicitly
-const API_BASE = '';
+const API_BASE = window.__API_BASE__ || '';
 
 // ==================== STATE ====================
 let events = [];          // Supabase 일정
@@ -447,6 +453,19 @@ let gcalEvents = [];      // Google Calendar 일정
 let gcalAuthenticated = false;
 let icloudEvents = [];    // iCloud Calendar 일정
 let icloudConnected = false;
+
+function icloudToken() {
+  return localStorage.getItem('icloudProxyToken') || '';
+}
+
+function icloudFetch(path, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-iCloud-Token': icloudToken(),
+    ...(options.headers || {}),
+  };
+  return fetch(API_BASE + path, { ...options, headers });
+}
 
 // Supabase 직접 연결 — 기본값 하드코딩 (initSupabase에서 덮어쓸 수 있음)
 let _sbUrl = 'https://hgnltcwzufcvzxwqgsfy.supabase.co';
@@ -999,7 +1018,7 @@ async function saveEvent(){
     } else if (editingEventId && editingEventId.startsWith('icloud_')) {
       const icloudEv = icloudEvents.find(e => e.id === editingEventId);
       if (!icloudEv?.icloudId) throw new Error('icloudId missing');
-      const res = await fetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, {
+      const res = await icloudFetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, {
         method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(evt)
       });
       if (!res.ok) throw new Error(`icloud update ${res.status}`);
@@ -1018,7 +1037,7 @@ async function saveEvent(){
       gcalEvents.push(await res.json());
       document.getElementById('gcalEventCount').textContent = gcalEvents.length;
     } else if ((document.getElementById('saveTarget')?.value || 'local') === 'icloud' && icloudConnected) {
-      const res = await fetch('/api/icloud/events', {
+      const res = await icloudFetch('/api/icloud/events', {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(evt)
       });
       if (!res.ok) throw new Error(`icloud create ${res.status}`);
@@ -1087,7 +1106,7 @@ async function deleteCurrentEvent(){
     } else if (currentEventId.startsWith('icloud_')) {
       const icloudEv = icloudEvents.find(e => e.id === currentEventId);
       if (!icloudEv?.icloudId) throw new Error('icloudId missing');
-      const res = await fetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, { method: 'DELETE' });
+      const res = await icloudFetch(`/api/icloud/events/${encodeURIComponent(icloudEv.icloudId)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`icloud delete ${res.status}`);
       icloudEvents = icloudEvents.filter(e => e.id !== currentEventId);
       document.getElementById('icloudEventCount').textContent = icloudEvents.length;
@@ -1208,24 +1227,35 @@ async function refreshGCal() {
 
 // ==================== ICLOUD CALENDAR ====================
 async function checkICloudStatus() {
+  if (!icloudToken()) {
+    icloudConnected = false;
+    updateICloudUI({
+      configured: false,
+      connected: false,
+      error: 'Netlify에 설정한 연동 토큰을 입력하세요.',
+    });
+    return;
+  }
   try {
-    const r = await fetch('/api/icloud/status');
+    const r = await icloudFetch('/api/icloud/status');
     const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
     icloudConnected = Boolean(data.connected);
     updateICloudUI(data);
     if (icloudConnected) await loadICloudEvents();
   } catch(e) {
     icloudConnected = false;
-    updateICloudUI({ configured: false, connected: false });
+    updateICloudUI({ configured: true, connected: false, error: e.message });
   }
 }
 
 async function loadICloudEvents() {
   if (!icloudConnected) return;
   try {
-    const r = await fetch('/api/icloud/events');
-    if (!r.ok) throw new Error('icloud fetch failed');
-    icloudEvents = await r.json();
+    const r = await icloudFetch('/api/icloud/events');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'icloud fetch failed');
+    icloudEvents = data;
     document.getElementById('icloudEventCount').textContent = icloudEvents.length;
     renderAll();
   } catch(e) {
@@ -1240,10 +1270,26 @@ function updateICloudUI(status) {
     document.getElementById('icloudEventCount').textContent = icloudEvents.length;
     document.getElementById('icloudCalendarName').textContent = status.calendar || '';
   } else {
-    document.getElementById('icloudStatusText').textContent = status.configured
-      ? `연결 실패: ${status.error || '계정 설정을 확인하세요'}`
-      : '서버 환경변수를 설정하면 선택적으로 연동됩니다.';
+    const tokenInput = document.getElementById('icloudTokenInput');
+    if (tokenInput && icloudToken()) tokenInput.value = icloudToken();
+    document.getElementById('icloudStatusText').textContent =
+      status.error || (status.configured
+        ? 'iCloud 계정 설정을 확인하세요.'
+        : 'Netlify에 설정한 연동 토큰을 입력하세요.');
   }
+}
+
+async function saveICloudToken() {
+  const input = document.getElementById('icloudTokenInput');
+  const token = (input?.value || '').trim();
+  if (!token) {
+    showToast('⚠️ iCloud 연동 토큰을 입력하세요');
+    return;
+  }
+  localStorage.setItem('icloudProxyToken', token);
+  showToast('iCloud 연결을 확인하는 중입니다…');
+  await checkICloudStatus();
+  if (icloudConnected) showToast('✅ iCloud 캘린더가 연결되었습니다');
 }
 
 async function refreshICloud() {

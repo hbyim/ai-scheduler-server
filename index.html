@@ -53,14 +53,20 @@
             "navigator.serviceWorker.register('./sw.js')"
           );
 
-        // GitHub Pages에서는 Python API를 실행할 수 없다. 백엔드 주소가
-        // 확정될 때까지 Google/iCloud 서버 연동 UI와 자동 조회를 비활성화한다.
+        // GitHub Pages에서는 서버 코드를 실행할 수 없으므로 iCloud 요청은
+        // Netlify의 보호된 CalDAV 프록시로 전달한다.
         html = html.replace(
-          /<!-- Google 캘린더 -->[\s\S]*?<!-- Supabase 연결 설정 -->/,
-          '<!-- Supabase 연결 설정 -->'
+          "const API_BASE = window.__API_BASE__ || '';",
+          "const API_BASE = 'https://yimschedulers.netlify.app';"
+        );
+
+        // Google OAuth 백엔드는 아직 구성되지 않았으므로 Google UI만 숨긴다.
+        html = html.replace(
+          /<!-- Google 캘린더 -->[\s\S]*?<!-- iCloud 캘린더 -->/,
+          '<!-- iCloud 캘린더 -->'
         );
         html = html.replace(
-          /\s*checkGCalAuth\(\);\s*checkICloudStatus\(\);/,
+          /\s*checkGCalAuth\(\);/,
           ''
         );
 
