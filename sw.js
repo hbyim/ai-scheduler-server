@@ -1,5 +1,5 @@
 // GitHub Pages용 AI 일정관리 Service Worker
-const CACHE_NAME = 'ai-scheduler-pages-v1';
+const CACHE_NAME = 'ai-scheduler-pages-v2';
 const BASE_PATH = new URL('./', self.registration.scope).pathname;
 const APP_ASSETS = [
   BASE_PATH,
@@ -57,6 +57,25 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.includes('/api/')) return;
+
+  const isHtml = event.request.mode === 'navigate'
+    || url.pathname.endsWith('/')
+    || url.pathname.endsWith('.html');
+
+  if (isHtml) {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then(cached =>
