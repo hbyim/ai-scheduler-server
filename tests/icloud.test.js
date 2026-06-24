@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { handler } = require('./icloud');
+const { handler } = require('../netlify/functions/icloud');
 
 const TOKEN = 'test-proxy-token';
 const CALENDAR_URL = 'https://caldav.icloud.com/calendars/user/home/';
