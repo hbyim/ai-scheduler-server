@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 일정관리</title>
+  <meta name="theme-color" content="#3b5bdb">
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #374499;
+      background: #f7f8fc;
+    }
+    .loading { text-align: center; line-height: 1.7; }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      margin: 0 auto 12px;
+      border: 3px solid #dce3ff;
+      border-top-color: #3b5bdb;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    AI 일정관리를 불러오는 중입니다…
+  </div>
+  <script>
+    (async () => {
+      try {
+        const response = await fetch('./static/index.html', { cache: 'no-cache' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        let html = await response.text();
+
+        // GitHub Pages project site는 저장소 하위 경로에서 서비스되므로
+        // 원본의 루트 절대경로를 Pages용 상대경로로 보정한다.
+        html = html
+          .replace('href="/manifest.json"', 'href="./manifest.json"')
+          .replaceAll('href="/icon-192.png"', 'href="./static/icon-192.png"')
+          .replaceAll("icon: '/icon-192.png'", "icon: './static/icon-192.png'")
+          .replaceAll("badge: '/icon-192.png'", "badge: './static/icon-192.png'")
+          .replace(
+            "navigator.serviceWorker.register('/sw.js')",
+            "navigator.serviceWorker.register('./sw.js')"
+          );
+
+        // GitHub Pages에서는 Python API를 실행할 수 없다. 백엔드 주소가
+        // 확정될 때까지 Google/iCloud 서버 연동 UI와 자동 조회를 비활성화한다.
+        html = html.replace(
+          /<!-- Google 캘린더 -->[\s\S]*?<!-- Supabase 연결 설정 -->/,
+          '<!-- Supabase 연결 설정 -->'
+        );
+        html = html.replace(
+          /\s*checkGCalAuth\(\);\s*checkICloudStatus\(\);/,
+          ''
+        );
+
+        document.open();
+        document.write(html);
+        document.close();
+      } catch (error) {
+        document.getElementById('loading').innerHTML =
+          '<strong>앱을 불러오지 못했습니다.</strong><br>' +
+          '잠시 후 새로고침해 주세요.';
+        console.error(error);
+      }
+    })();
+  </script>
+</body>
+</html>
