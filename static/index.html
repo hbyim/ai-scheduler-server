@@ -465,7 +465,10 @@ function icloudFetch(path, options = {}) {
     'X-iCloud-Token': icloudToken(),
     ...(options.headers || {}),
   };
-  return fetch(ICLOUD_API_BASE + path, { ...options, headers });
+  const target = ICLOUD_API_BASE
+    ? ICLOUD_API_BASE + path.replace(/^\/api\/icloud/, '')
+    : API_BASE + path;
+  return fetch(target, { ...options, headers });
 }
 
 async function readICloudJson(response) {

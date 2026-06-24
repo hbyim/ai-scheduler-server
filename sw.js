@@ -1,5 +1,5 @@
 // GitHub Pages용 AI 일정관리 Service Worker
-const CACHE_NAME = 'ai-scheduler-pages-v2';
+const CACHE_NAME = 'ai-scheduler-pages-v3';
 const BASE_PATH = new URL('./', self.registration.scope).pathname;
 const APP_ASSETS = [
   BASE_PATH,
