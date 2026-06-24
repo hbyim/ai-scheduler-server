@@ -56,8 +56,8 @@
         // GitHub Pages에서는 서버 코드를 실행할 수 없으므로 iCloud 요청은
         // Netlify의 보호된 CalDAV 프록시로 전달한다.
         html = html.replace(
-          "const API_BASE = window.__API_BASE__ || '';",
-          "const API_BASE = 'https://yimschedulers.netlify.app';"
+          "const ICLOUD_API_BASE = window.__ICLOUD_API_BASE__ || API_BASE;",
+          "const ICLOUD_API_BASE = 'https://yimschedulers.netlify.app';"
         );
 
         // Google OAuth 백엔드는 아직 구성되지 않았으므로 Google UI만 숨긴다.

@@ -446,6 +446,7 @@
 // ==================== CONFIG ====================
 // Auto-detect API base: empty string = same origin (production), or set explicitly
 const API_BASE = window.__API_BASE__ || '';
+const ICLOUD_API_BASE = window.__ICLOUD_API_BASE__ || API_BASE;
 
 // ==================== STATE ====================
 let events = [];          // Supabase 일정
@@ -464,7 +465,15 @@ function icloudFetch(path, options = {}) {
     'X-iCloud-Token': icloudToken(),
     ...(options.headers || {}),
   };
-  return fetch(API_BASE + path, { ...options, headers });
+  return fetch(ICLOUD_API_BASE + path, { ...options, headers });
+}
+
+async function readICloudJson(response) {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(`iCloud API 응답 오류 (${response.status})`);
+  }
+  return response.json();
 }
 
 // Supabase 직접 연결 — 기본값 하드코딩 (initSupabase에서 덮어쓸 수 있음)
@@ -1257,7 +1266,7 @@ async function checkICloudStatus() {
   }
   try {
     const r = await icloudFetch('/api/icloud/status');
-    const data = await r.json();
+    const data = await readICloudJson(r);
     if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
     icloudConnected = Boolean(data.connected);
     updateICloudUI(data);
@@ -1272,7 +1281,7 @@ async function loadICloudEvents() {
   if (!icloudConnected) return;
   try {
     const r = await icloudFetch('/api/icloud/events');
-    const data = await r.json();
+    const data = await readICloudJson(r);
     if (!r.ok) throw new Error(data.error || 'icloud fetch failed');
     icloudEvents = data;
     document.getElementById('icloudEventCount').textContent = icloudEvents.length;
