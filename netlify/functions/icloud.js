@@ -1,8 +1,8 @@
 const { randomUUID, timingSafeEqual } = require('node:crypto');
 
 const TIMEZONE = 'Asia/Seoul';
-//const DEFAULT_CALDAV_URL = 'https://caldav.icloud.com/';
-const DEFAULT_CALDAV_URL = 'https://p126-caldav.icloud.com/';
+const DEFAULT_CALDAV_URL = 'https://caldav.icloud.com/';
+const DEFAULT_CALENDAR_NAME = '캘린더';
 const ALLOWED_ORIGINS = new Set([
   'https://hbyim.github.io',
   'https://yimschedulers.netlify.app',
